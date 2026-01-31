@@ -17,7 +17,8 @@ RUN pip install --no-cache-dir \
     scipy \
     tqdm \
     pyacoustid \
-    audioread
+    audioread \
+    scikit-image
 
 # Copy script
 COPY find_video_duplicates.py /app/

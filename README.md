@@ -19,6 +19,7 @@ The tool uses a two-tier approach:
 - ✅ Detects duplicates even with different encodings/resolutions
 - ✅ Handles 15% length differences (accounts for cuts/additions)
 - ✅ Automatic fallback from audio to visual analysis
+- ✅ **Upscaling detection** - identifies fake 1080p/4K videos (720p upscaled)
 - ✅ Organizes duplicates into numbered folders
 - ✅ Generates JSON report with detailed results
 - ✅ Supports MP4, MKV, AVI, MOV formats
@@ -70,6 +71,7 @@ python /app/find_video_duplicates.py /videos [OPTIONS]
 Options:
   --dry-run              Show duplicates without moving files
   --report FILENAME      Save JSON report (default: duplicates_report.json)
+  --detect-upscaling     Analyze videos for upscaling (720p encoded as 1080p/4K)
 ```
 
 ## Output Structure
@@ -154,6 +156,87 @@ Videos are compared only if their durations are within 15% of each other.
 - Duration-based bucketing for efficiency
 - Parallel-ready structure (samples processed sequentially per video)
 - Memory-efficient temp file management
+
+## Upscaling Detection
+
+Videos are sometimes upscaled from lower resolutions (e.g., 720p content encoded as 4K) without actual quality improvement. This wastes storage space and provides no visual benefit.
+
+### How to Detect Upscaled Videos
+
+```bash
+# Run with upscaling analysis
+docker-compose exec video-dedup python /app/find_video_duplicates.py /videos --detect-upscaling
+```
+
+### Detection Methods
+
+The tool uses three complementary approaches with conservative thresholds:
+
+1. **Frequency Domain Analysis** (35% weight)
+   - Analyzes 2D FFT of video frames
+   - Genuine 4K/1080p has natural high-frequency detail
+   - Upscaled content shows sharp frequency drop-off at original resolution
+   - Most reliable indicator of upscaling
+
+2. **Edge Sharpness Analysis** (25% weight)
+   - Uses Laplacian variance to measure local sharpness
+   - Upscaled edges appear softer with less detail
+   - Conservative thresholds avoid flagging deliberately soft content (film grain, artistic blur)
+
+3. **Multi-Scale Comparison** (40% weight)
+   - Downsamples suspected 4K/1080p to 720p
+   - Compares quality similarity
+   - If downsampled version looks nearly identical, likely upscaled
+   - Most accurate but computationally intensive
+
+### Interpreting Results
+
+**Console Output:**
+```
+Upscaling Analysis Summary:
+  Total videos analyzed: 45
+  Potentially upscaled: 3
+
+  Flagged videos:
+    - movie_4k.mp4 (3840x2160) [confidence: 0.82]
+    - show_upscaled.mkv (1920x1080) [confidence: 0.71]
+```
+
+**JSON Report Fields:**
+```json
+{
+  "upscaling_analysis": {
+    "enabled": true,
+    "threshold": 0.65,
+    "summary": {
+      "total_analyzed": 45,
+      "upscaled_detected": 3
+    },
+    "videos": [
+      {
+        "filename": "movie_4k.mp4",
+        "is_upscaled": true,
+        "confidence": 0.82,
+        "resolution": [3840, 2160],
+        "scores": {
+          "frequency": 0.75,
+          "edge_sharpness": 0.60,
+          "multiscale": 0.95,
+          "combined": 0.82
+        }
+      }
+    ]
+  }
+}
+```
+
+### Important Notes
+
+- **Conservative by design**: Uses 0.65 confidence threshold to avoid false positives
+- **Soft content safe**: Deliberately soft videos (film grain, artistic blur) won't be flagged
+- **720p+ only**: Only analyzes videos ≥720p resolution
+- **Confidence scores**: Individual method scores show which detection triggered
+- **Not 100% accurate**: Some sophisticated upscaling may evade detection; flagged videos should be manually reviewed
 
 ## Troubleshooting
 

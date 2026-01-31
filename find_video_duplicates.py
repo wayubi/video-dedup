@@ -21,6 +21,7 @@ from PIL import Image
 import imagehash
 from tqdm import tqdm
 import audioread
+from scipy.ndimage import convolve
 
 # Supported video extensions
 VIDEO_EXTENSIONS = {'.mp4', '.mkv', '.avi', '.mov'}
@@ -32,6 +33,10 @@ NUM_AUDIO_SAMPLES = 4  # number of samples to extract
 NUM_VISUAL_SAMPLES = 4  # number of frames to extract
 SKIP_FIRST_SECONDS = 10  # skip first 10 seconds to avoid intros/ads
 TEMP_DIR = None
+
+# Upscaling Detection Configuration
+UPSCALING_CONFIDENCE_THRESHOLD = 0.65  # Conservative threshold to avoid false positives on soft videos
+MIN_UPSCALING_ANALYSIS_RESOLUTION = 720  # Only analyze videos >= 720p
 
 
 def get_video_duration(video_path: str) -> float:
@@ -417,6 +422,298 @@ def find_duplicate_groups(videos: List[Tuple[str, float]]) -> List[List[str]]:
     return groups
 
 
+def get_video_resolution(video_path: str) -> Tuple[int, int]:
+    """Get video width and height using ffprobe."""
+    try:
+        cmd = [
+            'ffprobe', '-v', 'error', '-select_streams', 'v:0',
+            '-show_entries', 'stream=width,height',
+            '-of', 'csv=s=x:p=0', video_path
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        width, height = map(int, result.stdout.strip().split('x'))
+        return (width, height)
+    except Exception as e:
+        return (0, 0)
+
+
+def calculate_frequency_score(image: np.ndarray) -> float:
+    """
+    Analyze frequency domain to detect missing high-frequency detail.
+    Returns score 0-1, higher = more likely upscaled.
+    """
+    try:
+        # Convert to grayscale if needed
+        if len(image.shape) == 3:
+            gray = np.mean(image, axis=2)
+        else:
+            gray = image
+        
+        # Apply 2D FFT
+        f_transform = np.fft.fft2(gray)
+        f_shift = np.fft.fftshift(f_transform)
+        magnitude = np.abs(f_shift)
+        
+        # Get dimensions
+        h, w = magnitude.shape
+        cy, cx = h // 2, w // 2
+        
+        # Define frequency bands (concentric rings)
+        y, x = np.ogrid[-cy:h-cy, -cx:w-cx]
+        
+        # Calculate energy in different frequency bands
+        low_freq_mask = x*x + y*y <= (min(h, w) * 0.1)**2
+        mid_freq_mask = (x*x + y*y > (min(h, w) * 0.1)**2) & (x*x + y*y <= (min(h, w) * 0.3)**2)
+        high_freq_mask = x*x + y*y > (min(h, w) * 0.3)**2
+        
+        low_energy = np.sum(magnitude[low_freq_mask])
+        mid_energy = np.sum(magnitude[mid_freq_mask])
+        high_energy = np.sum(magnitude[high_freq_mask])
+        
+        total_energy = low_energy + mid_energy + high_energy
+        if total_energy == 0:
+            return 0.0
+        
+        # Calculate ratios
+        low_ratio = low_energy / total_energy
+        mid_ratio = mid_energy / total_energy
+        high_ratio = high_energy / total_energy
+        
+        # Natural video has significant high-frequency content
+        # Upscaled video has low high-frequency energy
+        # Score increases as high-frequency ratio decreases
+        expected_high_freq = 0.15  # Expected minimum for genuine high-res
+        
+        if high_ratio >= expected_high_freq:
+            return 0.0
+        else:
+            # Linear scale: 0 at expected threshold, 1 at 0 high freq
+            return min(1.0, (expected_high_freq - high_ratio) / expected_high_freq)
+            
+    except Exception as e:
+        return 0.0
+
+
+def calculate_edge_sharpness_score(image: np.ndarray) -> float:
+    """
+    Analyze edge sharpness using Laplacian variance.
+    Upscaled images tend to have lower sharpness.
+    Returns score 0-1, higher = more likely upscaled.
+    """
+    try:
+        # Convert to grayscale
+        if len(image.shape) == 3:
+            gray = np.mean(image, axis=2).astype(np.float32)
+        else:
+            gray = image.astype(np.float32)
+        
+        # Apply Laplacian operator
+        laplacian = np.array([[0, 1, 0],
+                             [1, -4, 1],
+                             [0, 1, 0]])
+        
+        # Convolve
+        laplacian_img = convolve(gray, laplacian)
+        
+        # Calculate variance (measure of sharpness)
+        variance = np.var(laplacian_img)
+        
+        # Normalize by image size
+        variance_normalized = variance / (gray.shape[0] * gray.shape[1])
+        
+        # Expected variance ranges (empirically determined)
+        # These are conservative estimates to avoid flagging deliberately soft content
+        expected_var_1080p = 0.5
+        expected_var_4k = 1.5
+        
+        # Determine which threshold to use based on image size
+        h, w = gray.shape
+        if max(h, w) >= 3840:  # 4K
+            expected = expected_var_4k
+        elif max(h, w) >= 1920:  # 1080p
+            expected = expected_var_1080p
+        else:
+            return 0.0
+        
+        # Score: 0 if variance meets expectation, increases as it falls short
+        if variance_normalized >= expected * 0.6:  # 60% threshold for soft content
+            return 0.0
+        else:
+            ratio = variance_normalized / (expected * 0.6)
+            return max(0.0, min(1.0, 1.0 - ratio))
+            
+    except Exception as e:
+        return 0.0
+
+
+def calculate_multiscale_score(video_path: str, width: int, height: int) -> float:
+    """
+    Multi-scale analysis: downsample to lower res and compare.
+    If quality is nearly identical when downsampled, likely upscaled.
+    Returns score 0-1, higher = more likely upscaled.
+    """
+    try:
+        if TEMP_DIR is None:
+            return 0.0
+        
+        # Only analyze 1080p+ content
+        if max(width, height) < 1920:
+            return 0.0
+        
+        # Extract a frame at 50% mark
+        duration = get_video_duration(video_path)
+        timestamp = duration * 0.5
+        
+        temp_orig = os.path.join(TEMP_DIR, f"upscale_orig_{os.path.basename(video_path)}.jpg")
+        temp_down = os.path.join(TEMP_DIR, f"upscale_down_{os.path.basename(video_path)}.jpg")
+        
+        # Extract original resolution frame
+        cmd_orig = [
+            'ffmpeg', '-y', '-ss', str(timestamp), '-i', video_path,
+            '-vframes', '1', '-q:v', '2', temp_orig
+        ]
+        subprocess.run(cmd_orig, capture_output=True, timeout=15)
+        
+        if not os.path.exists(temp_orig):
+            return 0.0
+        
+        # Extract downsampled frame (to 720p equivalent)
+        target_width = 1280
+        target_height = 720
+        
+        cmd_down = [
+            'ffmpeg', '-y', '-ss', str(timestamp), '-i', video_path,
+            '-vf', f'scale={target_width}:{target_height}:flags=lanczos',
+            '-vframes', '1', '-q:v', '2', temp_down
+        ]
+        subprocess.run(cmd_down, capture_output=True, timeout=15)
+        
+        if not os.path.exists(temp_down):
+            os.remove(temp_orig)
+            return 0.0
+        
+        # Load images
+        img_orig = Image.open(temp_orig).convert('RGB')
+        img_down = Image.open(temp_down).convert('RGB')
+        
+        # Resize original to match downsampled for comparison
+        img_orig_resized = img_orig.resize((target_width, target_height), Image.Resampling.LANCZOS)
+        
+        # Calculate structural similarity
+        arr_orig = np.array(img_orig_resized).astype(np.float32)
+        arr_down = np.array(img_down).astype(np.float32)
+        
+        # Simple normalized cross-correlation
+        mean_orig = np.mean(arr_orig)
+        mean_down = np.mean(arr_down)
+        
+        std_orig = np.std(arr_orig)
+        std_down = np.std(arr_down)
+        
+        if std_orig == 0 or std_down == 0:
+            similarity = 1.0
+        else:
+            covariance = np.mean((arr_orig - mean_orig) * (arr_down - mean_down))
+            similarity = covariance / (std_orig * std_down)
+            similarity = max(0, min(1, (similarity + 1) / 2))  # Normalize to 0-1
+        
+        # Cleanup
+        os.remove(temp_orig)
+        os.remove(temp_down)
+        
+        # High similarity suggests upscaling (downsampling didn't lose much detail)
+        # Threshold: if similarity > 0.95, likely upscaled
+        if similarity > 0.95:
+            return min(1.0, (similarity - 0.95) / 0.05)
+        else:
+            return 0.0
+            
+    except Exception as e:
+        return 0.0
+
+
+def detect_upscaling(video_path: str) -> Tuple[bool, float, Dict]:
+    """
+    Detect if a video is upscaled from lower resolution.
+    Returns (is_upscaled, confidence_score, details_dict).
+    Uses multiple methods with conservative thresholds to avoid false positives.
+    """
+    width, height = get_video_resolution(video_path)
+    
+    # Skip if resolution is too low to analyze
+    if max(width, height) < MIN_UPSCALING_ANALYSIS_RESOLUTION:
+        return False, 0.0, {"skipped": True, "reason": "resolution_too_low", "resolution": (int(width), int(height))}
+    
+    # Extract a representative frame for analysis
+    duration = get_video_duration(video_path)
+    timestamp = max(SKIP_FIRST_SECONDS, duration * 0.3)  # Avoid intro, not too late
+    
+    try:
+        if TEMP_DIR is None:
+            return False, 0.0, {"error": "temp_dir_not_set"}
+        
+        temp_frame = os.path.join(TEMP_DIR, f"upscale_analysis_{os.path.basename(video_path)}.jpg")
+        
+        cmd = [
+            'ffmpeg', '-y', '-ss', str(timestamp), '-i', video_path,
+            '-vframes', '1', '-q:v', '2', temp_frame
+        ]
+        subprocess.run(cmd, capture_output=True, timeout=15)
+        
+        if not os.path.exists(temp_frame):
+            return False, 0.0, {"error": "frame_extraction_failed"}
+        
+        # Load image
+        img = Image.open(temp_frame).convert('RGB')
+        img_array = np.array(img)
+        
+        # Run multiple detection methods
+        freq_score = calculate_frequency_score(img_array)
+        edge_score = calculate_edge_sharpness_score(img_array)
+        
+        # Cleanup
+        os.remove(temp_frame)
+        
+        # Multi-scale test (separate from frame analysis)
+        multi_score = calculate_multiscale_score(video_path, width, height)
+        
+        # Combine scores with weights
+        # Frequency analysis is most reliable, but edge detection catches some cases
+        # Multi-scale is slowest but most accurate when it works
+        weights = {
+            'frequency': 0.35,
+            'edge': 0.25,
+            'multiscale': 0.40
+        }
+        
+        combined_score = (
+            weights['frequency'] * freq_score +
+            weights['edge'] * edge_score +
+            weights['multiscale'] * multi_score
+        )
+        
+        # Determine if upscaled (conservative threshold)
+        is_upscaled = bool(combined_score > UPSCALING_CONFIDENCE_THRESHOLD)
+        
+        # Convert numpy types to native Python types for JSON serialization
+        details = {
+            "resolution": (int(width), int(height)),
+            "scores": {
+                "frequency": round(float(freq_score), 3),
+                "edge_sharpness": round(float(edge_score), 3),
+                "multiscale": round(float(multi_score), 3),
+                "combined": round(float(combined_score), 3)
+            },
+            "threshold": float(UPSCALING_CONFIDENCE_THRESHOLD),
+            "methods_used": ["frequency_analysis", "edge_sharpness", "multiscale_comparison"]
+        }
+        
+        return is_upscaled, float(combined_score), details
+        
+    except Exception as e:
+        return False, 0.0, {"error": str(e), "resolution": (int(width), int(height))}
+
+
 def organize_duplicates(directory: str, duplicate_groups: List[List[str]], dry_run: bool = False):
     """Move duplicate videos into numbered folders."""
     if not duplicate_groups:
@@ -465,6 +762,8 @@ def main():
                         help='Show duplicates without moving files')
     parser.add_argument('--report', type=str, default='duplicates_report.json',
                         help='Path to save JSON report')
+    parser.add_argument('--detect-upscaling', action='store_true',
+                        help='Detect videos that are upscaled from lower resolutions (e.g., 720p encoded as 4K). Adds upscaling analysis to the report.')
     
     args = parser.parse_args()
     
@@ -477,6 +776,8 @@ def main():
     # Create temp directory
     TEMP_DIR = tempfile.mkdtemp(prefix="video_dedup_")
     
+    upscaling_results = {}
+    
     try:
         # Find all videos
         print(f"Scanning {directory} for videos...")
@@ -487,6 +788,38 @@ def main():
             sys.exit(0)
         
         print(f"Found {len(video_paths)} videos")
+        
+        # Optional: Detect upscaling
+        if args.detect_upscaling:
+            print("\n" + "="*60)
+            print("UPSCALING DETECTION MODE")
+            print("="*60)
+            print("Analyzing videos for potential upscaling...")
+            print(f"Analyzing videos with resolution >= {MIN_UPSCALING_ANALYSIS_RESOLUTION}p")
+            print(f"Confidence threshold: {UPSCALING_CONFIDENCE_THRESHOLD} (conservative)")
+            print("Note: Deliberately soft content may not be flagged")
+            print("="*60 + "\n")
+            
+            for path in tqdm(video_paths, desc="Analyzing upscaling"):
+                is_upscaled, confidence, details = detect_upscaling(path)
+                upscaling_results[path] = {
+                    "is_upscaled": is_upscaled,
+                    "confidence": round(confidence, 3),
+                    "details": details
+                }
+            
+            # Print summary
+            upscaled_count = sum(1 for r in upscaling_results.values() if r["is_upscaled"])
+            print(f"\nUpscaling Analysis Summary:")
+            print(f"  Total videos analyzed: {len(upscaling_results)}")
+            print(f"  Potentially upscaled: {upscaled_count}")
+            
+            if upscaled_count > 0:
+                print(f"\n  Flagged videos:")
+                for path, result in upscaling_results.items():
+                    if result["is_upscaled"]:
+                        width, height = result["details"].get("resolution", (0, 0))
+                        print(f"    - {os.path.basename(path)} ({width}x{height}) [confidence: {result['confidence']:.2f}]")
         
         # Get durations
         videos_with_duration = []
@@ -522,6 +855,30 @@ def main():
                 for i, group in enumerate(duplicate_groups)
             ]
         }
+        
+        # Add upscaling analysis to report if performed
+        if args.detect_upscaling and upscaling_results:
+            report['upscaling_analysis'] = {
+                'enabled': True,
+                'threshold': UPSCALING_CONFIDENCE_THRESHOLD,
+                'min_resolution_analyzed': MIN_UPSCALING_ANALYSIS_RESOLUTION,
+                'summary': {
+                    'total_analyzed': len(upscaling_results),
+                    'upscaled_detected': sum(1 for r in upscaling_results.values() if r['is_upscaled']),
+                    'analysis_methods': ['frequency_analysis', 'edge_sharpness', 'multiscale_comparison']
+                },
+                'videos': [
+                    {
+                        'path': path,
+                        'filename': os.path.basename(path),
+                        'is_upscaled': result['is_upscaled'],
+                        'confidence': result['confidence'],
+                        'resolution': result['details'].get('resolution', [0, 0]),
+                        'scores': result['details'].get('scores', {})
+                    }
+                    for path, result in upscaling_results.items()
+                ]
+            }
         
         report_path = os.path.join(directory, args.report)
         with open(report_path, 'w') as f:
