@@ -173,6 +173,27 @@ docker-compose exec video-dedup python /app/find_video_duplicates.py /videos --i
 docker-compose exec video-dedup python /app/find_video_duplicates.py /videos --include-subfolders movies tv_shows --exclude-root
 ```
 
+### Scan External Folders (Absolute Paths)
+
+You can also scan folders outside the base directory by using absolute paths. This is useful when your videos are scattered across different locations.
+
+```bash
+# Scan base directory plus external folders
+docker-compose exec video-dedup python /app/find_video_duplicates.py /tmp/master-vids/ --include-subfolders /new/vids-a/ /new/vids-c/
+
+# Scan only external folders (exclude base directory)
+docker-compose exec video-dedup python /app/find_video_duplicates.py /tmp/master-vids/ --include-subfolders /new/vids-a/ /new/vids-c/ --exclude-root
+
+# Mix relative and absolute paths
+docker-compose exec video-dedup python /app/find_video_duplicates.py /videos --include-subfolders ./local-subfolder /external/videos/
+```
+
+**How it works:**
+- **Absolute paths** (starting with `/`): Used exactly as specified
+- **Relative paths** (starting with `./`, `../`, or plain names): Resolved relative to the base directory
+- All scanned videos participate in duplicate detection together
+- All duplicates are organized into the base directory's `.deduped/` folder
+
 ### Examples
 
 | Command | Scanned Locations |
@@ -182,6 +203,8 @@ docker-compose exec video-dedup python /app/find_video_duplicates.py /videos --i
 | `python find_video_duplicates.py /videos --include-subfolders movies` | `movies/` subfolder only |
 | `python find_video_duplicates.py /videos --include-subfolders . movies` | Root + `movies/` subfolder |
 | `python find_video_duplicates.py /videos --include-subfolders --exclude-root` | All subfolders (no root) |
+| `python find_video_duplicates.py /base --include-subfolders /external/vids/` | Root + external folder |
+| `python find_video_duplicates.py /base --include-subfolders /ext/a/ /ext/b/ --exclude-root` | External folders only |
 
 ## How Duplicate Detection Works
 

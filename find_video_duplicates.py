@@ -345,8 +345,11 @@ def find_videos(
             
             # Add specified subfolders
             for subfolder in include_subfolders:
-                # Resolve relative path
-                subfolder_path = os.path.abspath(os.path.join(abs_directory, subfolder))
+                # Resolve path - absolute paths are used as-is, relative paths resolved against base
+                if os.path.isabs(subfolder):
+                    subfolder_path = os.path.abspath(subfolder)
+                else:
+                    subfolder_path = os.path.abspath(os.path.join(abs_directory, subfolder))
                 
                 # Validate it exists and is a directory
                 if not os.path.exists(subfolder_path):
