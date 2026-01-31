@@ -805,8 +805,328 @@ def detect_upscaling(video_path: str) -> Tuple[bool, float, Dict]:
         return False, 0.0, {"error": str(e), "resolution": (int(width), int(height))}
 
 
+def extract_video_metadata(video_path: str) -> Dict:
+    """
+    Extract comprehensive video metadata using ffprobe.
+    Returns dictionary with all metadata fields.
+    """
+    metadata = {
+        "file_info": {},
+        "video": {},
+        "audio": [],
+        "container": {},
+        "subtitles": {}
+    }
+    
+    try:
+        # File info
+        file_stat = os.stat(video_path)
+        metadata["file_info"] = {
+            "original_full_path": os.path.abspath(video_path),
+            "filename": os.path.basename(video_path),
+            "file_size_bytes": file_stat.st_size,
+            "modification_time": file_stat.st_mtime
+        }
+        
+        # Get all streams info
+        cmd = [
+            'ffprobe', '-v', 'error', '-show_streams', '-show_format',
+            '-print_format', 'json', video_path
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        
+        if result.returncode != 0:
+            return metadata
+        
+        probe_data = json.loads(result.stdout)
+        
+        # Process streams
+        video_stream = None
+        audio_streams = []
+        subtitle_streams = []
+        
+        for stream in probe_data.get('streams', []):
+            codec_type = stream.get('codec_type', '')
+            if codec_type == 'video':
+                if not video_stream or stream.get('disposition', {}).get('default', 0):
+                    video_stream = stream
+            elif codec_type == 'audio':
+                audio_streams.append(stream)
+            elif codec_type == 'subtitle':
+                subtitle_streams.append(stream)
+        
+        # Video metadata
+        if video_stream:
+            width = int(video_stream.get('width', 0))
+            height = int(video_stream.get('height', 0))
+            duration = float(video_stream.get('duration', 0) or 
+                           probe_data.get('format', {}).get('duration', 0) or 0)
+            
+            # Format duration as HH:MM:SS
+            hours = int(duration // 3600)
+            minutes = int((duration % 3600) // 60)
+            seconds = int(duration % 60)
+            duration_formatted = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+            
+            # Extract frame rate
+            fps_str = video_stream.get('r_frame_rate', '0/1')
+            try:
+                num, den = map(int, fps_str.split('/'))
+                fps = num / den if den != 0 else 0
+            except:
+                fps = 0
+            
+            # Bit depth calculation
+            pix_fmt = video_stream.get('pix_fmt', '')
+            bit_depth = 10 if 'p10' in pix_fmt else 8
+            
+            # HDR detection
+            hdr_formats = ['smpte2084', 'arib-std-b67', 'smpte2086', 'cll']
+            color_transfer = video_stream.get('color_transfer', '').lower()
+            color_space = video_stream.get('color_space', '')
+            hdr_format = None
+            if any(fmt in color_transfer for fmt in hdr_formats):
+                hdr_format = 'HDR10' if '2084' in color_transfer else 'HLG' if 'arib' in color_transfer else 'HDR'
+            
+            # Video bitrate
+            video_bitrate = 0
+            if 'bit_rate' in video_stream:
+                video_bitrate = int(video_stream['bit_rate']) // 1000
+            
+            metadata["video"] = {
+                "width": width,
+                "height": height,
+                "resolution": f"{width}x{height}",
+                "duration_seconds": round(duration, 2),
+                "duration_formatted": duration_formatted,
+                "video_codec": video_stream.get('codec_name', 'unknown'),
+                "video_bitrate_kbps": video_bitrate,
+                "frame_rate": round(fps, 2),
+                "pixel_format": pix_fmt,
+                "video_profile": video_stream.get('profile', 'unknown'),
+                "bit_depth": bit_depth,
+                "color_space": color_space or 'unknown',
+                "hdr_format": hdr_format
+            }
+        
+        # Audio metadata
+        for audio_stream in audio_streams:
+            audio_info = {
+                "codec": audio_stream.get('codec_name', 'unknown'),
+                "bitrate_kbps": int(audio_stream.get('bit_rate', 0)) // 1000 if 'bit_rate' in audio_stream else 0,
+                "sample_rate_hz": int(audio_stream.get('sample_rate', 0)),
+                "channels": audio_stream.get('channels', 0),
+                "language": audio_stream.get('tags', {}).get('language', 'und')
+            }
+            metadata["audio"].append(audio_info)
+        
+        # Container metadata
+        format_info = probe_data.get('format', {})
+        metadata["container"] = {
+            "container_format": format_info.get('format_name', 'unknown').split(',')[0],
+            "creation_time": format_info.get('tags', {}).get('creation_time', None)
+        }
+        
+        # Subtitle metadata
+        subtitle_languages = []
+        for sub_stream in subtitle_streams:
+            lang = sub_stream.get('tags', {}).get('language', 'und')
+            subtitle_languages.append(lang)
+        
+        metadata["subtitles"] = {
+            "subtitle_tracks_count": len(subtitle_streams),
+            "subtitle_languages": subtitle_languages
+        }
+        
+    except Exception as e:
+        print(f"Warning: Could not extract metadata for {video_path}: {e}")
+    
+    return metadata
+
+
+def calculate_quality_score(metadata: Dict) -> Tuple[int, str]:
+    """
+    Calculate quality score (0-100) based on video characteristics.
+    Returns (score, reason_string).
+    """
+    score = 0
+    reasons = []
+    
+    video_info = metadata.get("video", {})
+    
+    if not video_info:
+        return 0, "No video stream found"
+    
+    width = video_info.get("width", 0)
+    height = video_info.get("height", 0)
+    resolution_pixels = width * height
+    
+    # 1. Resolution scoring (25 points max)
+    if resolution_pixels >= 3840 * 2160:  # 4K+
+        score += 25
+        reasons.append("4K resolution")
+    elif resolution_pixels >= 1920 * 1080:  # 1080p
+        score += 20
+        reasons.append("1080p resolution")
+    elif resolution_pixels >= 1280 * 720:  # 720p
+        score += 12
+        reasons.append("720p resolution")
+    elif resolution_pixels >= 720 * 480:  # SD
+        score += 5
+        reasons.append("SD resolution")
+    else:
+        score += 2
+        reasons.append("low resolution")
+    
+    # 2. Bitrate scoring (30 points max) - scaled to resolution
+    bitrate = video_info.get("video_bitrate_kbps", 0)
+    if resolution_pixels > 0:
+        # Calculate expected bitrate for this resolution (very rough estimates)
+        expected_4k_bitrate = 25000
+        expected_1080p_bitrate = 8000
+        expected_720p_bitrate = 4000
+        
+        max_pixels = 3840 * 2160
+        bitrate_ratio = min(1.0, bitrate / expected_4k_bitrate) if resolution_pixels >= 3840 * 2160 else \
+                       min(1.0, bitrate / expected_1080p_bitrate) if resolution_pixels >= 1920 * 1080 else \
+                       min(1.0, bitrate / expected_720p_bitrate) if resolution_pixels >= 1280 * 720 else \
+                       min(1.0, bitrate / 2000)
+        
+        bitrate_score = int(30 * bitrate_ratio)
+        score += bitrate_score
+        
+        if bitrate_score >= 25:
+            reasons.append(f"excellent bitrate ({bitrate} kbps)")
+        elif bitrate_score >= 15:
+            reasons.append(f"good bitrate ({bitrate} kbps)")
+        elif bitrate > 0:
+            reasons.append(f"moderate bitrate ({bitrate} kbps)")
+        else:
+            reasons.append("unknown bitrate")
+    
+    # 3. Codec efficiency (20 points max)
+    codec = video_info.get("video_codec", "unknown").lower()
+    if codec in ['hevc', 'h265', 'av1']:
+        score += 20
+        reasons.append("efficient modern codec (HEVC/AV1)")
+    elif codec in ['h264', 'avc']:
+        score += 15
+        reasons.append("standard H.264 codec")
+    elif codec in ['mpeg4', 'mpeg2', 'xvid', 'divx']:
+        score += 8
+        reasons.append("older MPEG codec")
+    else:
+        score += 5
+        reasons.append(f"codec: {codec}")
+    
+    # 4. HDR bonus (15 points)
+    hdr = video_info.get("hdr_format")
+    if hdr:
+        score += 15
+        reasons.append(f"HDR support ({hdr})")
+    
+    # 5. Frame rate (10 points max)
+    fps = video_info.get("frame_rate", 0)
+    if fps >= 59:  # 60fps
+        score += 10
+        reasons.append("60fps")
+    elif fps >= 29:  # 30fps
+        score += 7
+        reasons.append("30fps")
+    elif fps >= 24:
+        score += 5
+        reasons.append("24/25fps")
+    else:
+        score += 3
+        reasons.append(f"{fps}fps")
+    
+    reason_str = ", ".join(reasons)
+    return min(100, max(0, score)), reason_str
+
+
+def analyze_duplicate_set(videos_with_metadata: List[Tuple[str, Dict]]) -> Dict[str, Dict]:
+    """
+    Analyze a set of duplicate videos and determine which to keep.
+    Returns dictionary mapping video paths to analysis results.
+    """
+    if not videos_with_metadata:
+        return {}
+    
+    # Calculate quality scores for all videos
+    results = {}
+    for video_path, metadata in videos_with_metadata:
+        score, reason = calculate_quality_score(metadata)
+        results[video_path] = {
+            "metadata": metadata,
+            "quality_score": score,
+            "quality_reason": reason,
+            "recommendation": "DELETE_CANDIDATE",
+            "reason": "",
+            "better_alternative": None
+        }
+    
+    # Find the highest quality video
+    if len(results) == 1:
+        # Single video - keep it
+        video_path = list(results.keys())[0]
+        results[video_path]["recommendation"] = "KEEP"
+        results[video_path]["reason"] = "Only copy of this content"
+        return results
+    
+    # Find best video based on quality score
+    best_path = max(results.keys(), key=lambda p: results[p]["quality_score"])
+    best_score = results[best_path]["quality_score"]
+    best_metadata = results[best_path]["metadata"]
+    
+    # Mark the best as KEEP
+    best_video_info = best_metadata.get("video", {})
+    best_res = best_video_info.get("resolution", "unknown")
+    best_codec = best_video_info.get("video_codec", "unknown")
+    best_bitrate = best_video_info.get("video_bitrate_kbps", 0)
+    
+    results[best_path]["recommendation"] = "KEEP"
+    results[best_path]["reason"] = f"Best quality: {best_res}, {best_codec}, {results[best_path]['quality_score']}/100 score"
+    
+    # Mark others as DELETE_CANDIDATE with reference to best
+    for video_path, result in results.items():
+        if video_path != best_path:
+            score = result["quality_score"]
+            score_diff = best_score - score
+            
+            video_info = result["metadata"].get("video", {})
+            video_res = video_info.get("resolution", "unknown")
+            video_codec = video_info.get("video_codec", "unknown")
+            video_bitrate = video_info.get("video_bitrate_kbps", 0)
+            
+            # Generate reason
+            if score_diff >= 30:
+                reason = f"Significantly lower quality ({score}/100 vs {best_score}/100)"
+            elif score_diff >= 15:
+                reason = f"Lower quality ({score}/100 vs {best_score}/100)"
+            else:
+                reason = f"Lower quality ({score}/100 vs {best_score}/100)"
+            
+            # Add specific technical reasons
+            if video_res != best_res:
+                reason += f"; lower resolution ({video_res} vs {best_res})"
+            if video_codec != best_codec and best_codec in ['hevc', 'h265', 'av1']:
+                reason += f"; less efficient codec ({video_codec} vs {best_codec})"
+            if video_bitrate < best_bitrate * 0.7 and video_bitrate > 0:
+                reason += f"; lower bitrate ({video_bitrate} vs {best_bitrate} kbps)"
+            
+            result["recommendation"] = "DELETE_CANDIDATE"
+            result["reason"] = reason
+            result["better_alternative"] = {
+                "filename": os.path.basename(best_path),
+                "quality_score": best_score,
+                "reason": f"Better quality: {best_res}, {best_codec}, {best_score}/100 score"
+            }
+    
+    return results
+
+
 def organize_duplicates(directory: str, duplicate_groups: List[List[str]], dry_run: bool = False):
-    """Move duplicate videos into .deduped/numbered folders."""
+    """Move duplicate videos into .deduped/numbered folders with metadata JSON files."""
     if not duplicate_groups:
         print("No duplicates found!")
         return
@@ -821,15 +1141,29 @@ def organize_duplicates(directory: str, duplicate_groups: List[List[str]], dry_r
         folder_path = os.path.join(deduped_base, folder_name)
         
         print(f"\n{folder_name}: {len(group)} videos")
-        for video in group:
-            rel_path = os.path.relpath(video, directory)
-            print(f"  - {rel_path}")
+        
+        # Extract metadata and calculate quality scores for all videos in this set
+        videos_with_metadata = []
+        for video_path in group:
+            print(f"  Extracting metadata: {os.path.basename(video_path)}")
+            metadata = extract_video_metadata(video_path)
+            videos_with_metadata.append((video_path, metadata))
+        
+        # Analyze the duplicate set to determine recommendations
+        analysis_results = analyze_duplicate_set(videos_with_metadata)
+        
+        for video_path in group:
+            rel_path = os.path.relpath(video_path, directory)
+            analysis = analysis_results.get(video_path, {})
+            rec = analysis.get("recommendation", "UNKNOWN")
+            score = analysis.get("quality_score", 0)
+            print(f"  - {rel_path} [{rec}, score: {score}]")
         
         if not dry_run:
             # Create .deduped folder and set folder
             os.makedirs(folder_path, exist_ok=True)
             
-            # Move all videos in the group
+            # Move all videos in the group and create metadata JSON files
             for video_path in group:
                 try:
                     filename = os.path.basename(video_path)
@@ -842,8 +1176,37 @@ def organize_duplicates(directory: str, duplicate_groups: List[List[str]], dry_r
                         dest_path = os.path.join(folder_path, f"{base_name}_{counter:02d}{ext}")
                         counter += 1
                     
+                    # Get the analysis result for this video
+                    analysis = analysis_results.get(video_path, {})
+                    metadata = analysis.get("metadata", {})
+                    
+                    # Build the full JSON structure
+                    json_data = {
+                        "recommendation": analysis.get("recommendation", "UNKNOWN"),
+                        "original_full_path": analysis.get("metadata", {}).get("file_info", {}).get("original_full_path", os.path.abspath(video_path)),
+                        "quality_score": analysis.get("quality_score", 0),
+                        "reason": analysis.get("reason", ""),
+                        "filename": filename,
+                        "file_size_bytes": metadata.get("file_info", {}).get("file_size_bytes", 0),
+                        "modification_time": metadata.get("file_info", {}).get("modification_time", 0),
+                        **metadata
+                    }
+                    
+                    # Add better_alternative for DELETE_CANDIDATE files
+                    if analysis.get("recommendation") == "DELETE_CANDIDATE":
+                        json_data["better_alternative"] = analysis.get("better_alternative")
+                    
+                    # Save metadata JSON file (video.mp4.json)
+                    json_filename = f"{os.path.basename(dest_path)}.json"
+                    json_path = os.path.join(folder_path, json_filename)
+                    with open(json_path, 'w') as f:
+                        json.dump(json_data, f, indent=2)
+                    
+                    # Move the video file
                     shutil.move(video_path, dest_path)
                     print(f"  -> Moved to .deduped/{folder_name}")
+                    print(f"  -> Created metadata: {json_filename}")
+                    
                 except Exception as e:
                     print(f"  ERROR moving {video_path}: {e}")
 

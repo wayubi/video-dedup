@@ -20,8 +20,10 @@ RUN pip install --no-cache-dir \
     audioread \
     scikit-image
 
-# Copy script
+# Copy scripts
 COPY find_video_duplicates.py /app/
+COPY dedup_delete.py /app/
+COPY dedup_restore.py /app/
 
 WORKDIR /app
 

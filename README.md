@@ -22,6 +22,10 @@ The tool uses a two-tier approach:
 - ✅ **Upscaling detection** - identifies fake 1080p/4K videos (720p upscaled)
 - ✅ **Flexible folder scanning** - scan root only, all subfolders, or specific subfolders
 - ✅ **Smart organization** - moves duplicates to hidden `.deduped/` folder
+- ✅ **Quality scoring** - automatically ranks duplicates by quality (resolution, bitrate, codec, HDR)
+- ✅ **Detailed metadata** - generates JSON metadata files with technical specs for each video
+- ✅ **Intelligent recommendations** - marks best quality as "KEEP", others as "DELETE_CANDIDATE"
+- ✅ **Cleanup scripts** - separate tools to safely delete candidates and restore keep files
 - ✅ Generates JSON report with detailed results
 - ✅ Supports MP4, MKV, AVI, MOV formats
 - ✅ Progress tracking with detailed console output
@@ -297,6 +301,107 @@ Upscaling Analysis Summary:
 - **720p+ only**: Only analyzes videos ≥720p resolution
 - **Confidence scores**: Individual method scores show which detection triggered
 - **Not 100% accurate**: Some sophisticated upscaling may evade detection; flagged videos should be manually reviewed
+
+## Metadata and Cleanup Scripts
+
+After detecting duplicates, each video file gets a companion `.json` metadata file with detailed information and cleanup recommendations.
+
+### Metadata JSON Structure
+
+Each video in `.deduped/` gets a `{filename}.json` file:
+
+```json
+{
+  "original_full_path": "/path/to/original/movie.mp4",
+  "filename": "movie.mp4",
+  "file_size": {"bytes": 8589934592, "human": "8.00 GB"},
+  "modification_time": "2025-01-15T10:30:00Z",
+  "video": {
+    "width": 3840,
+    "height": 2160,
+    "duration_seconds": 7200,
+    "duration_formatted": "02:00:00",
+    "codec": "HEVC",
+    "bitrate_kbps": 8000,
+    "frame_rate": 24.0,
+    "hdr_format": "HDR10"
+  },
+  "audio": [{"codec": "AAC", "bitrate_kbps": 256, "channels": 5.1, "language": "eng"}],
+  "quality_score": 95,
+  "recommendation": "KEEP",
+  "reason": "Highest quality in set: 4K HDR"
+}
+```
+
+### Delete Candidates (`dedup_delete.py`)
+
+Safely delete all videos marked as `DELETE_CANDIDATE`.
+
+**Dry-run by default** - shows what would be deleted without actually doing it.
+
+```bash
+# Show what would be deleted (dry run)
+docker-compose exec video-dedup python /app/dedup_delete.py /videos
+
+# Actually delete the files
+docker-compose exec video-dedup python /app/dedup_delete.py /videos --confirm
+```
+
+**Features:**
+- Only deletes files with `recommendation: "DELETE_CANDIDATE"`
+- Deletes both video file and its `.json` metadata
+- Removes empty duplicate set folders
+- Generates deletion report
+
+**Safety:**
+- Requires `--confirm` flag to actually delete
+- Validates JSON and video file exist before deleting
+- Reports errors without stopping
+
+### Restore Files (`dedup_restore.py`)
+
+Restore all videos marked as `KEEP` to their original locations.
+
+```bash
+# Restore all KEEP files to original locations
+docker-compose exec video-dedup python /app/dedup_restore.py /videos
+```
+
+**Features:**
+- Restores to `original_full_path` from metadata
+- Creates parent directories if missing
+- Handles filename collisions (adds `_restored_001` suffix)
+- Deletes from `.deduped/` after successful restore
+- Removes empty folders including `.deduped/` itself
+- Generates restoration report
+
+**Process:**
+1. Reads all `KEEP` files from `.deduped/`
+2. Moves each file back to its original location
+3. Removes the `.json` metadata file
+4. Cleans up empty folders
+5. Removes `.deduped/` folder when empty
+
+### Workflow Example
+
+Complete workflow from detection to cleanup:
+
+```bash
+# 1. Detect duplicates
+docker-compose exec video-dedup python /app/find_video_duplicates.py /videos --include-subfolders
+
+# 2. Review .deduped/ folder and metadata JSON files
+ls -la /videos/.deduped/
+
+# 3. Preview what would be deleted (optional)
+docker-compose exec video-dedup python /app/dedup_delete.py /videos
+
+# 4. Delete candidates to free space
+docker-compose exec video-dedup python /app/dedup_delete.py /videos --confirm
+
+# 5. Restore keep files back to original locations
+docker-compose exec video-dedup python /app/dedup_restore.py /videos
+```
 
 ## Troubleshooting
 
