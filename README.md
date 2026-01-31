@@ -59,10 +59,10 @@ docker-compose build
 docker-compose up -d
 
 # Run the duplicate detection
-docker-compose exec video-dedup python /app/find_video_duplicates.py /videos
+docker-compose exec video-dedup python /app/scripts/find_video_duplicates.py /videos
 
 # Optional: dry run to preview without moving files
-docker-compose exec video-dedup python /app/find_video_duplicates.py /videos --dry-run
+docker-compose exec video-dedup python /app/scripts/find_video_duplicates.py /videos --dry-run
 
 # Stop the container when done
 docker-compose down
@@ -71,7 +71,7 @@ docker-compose down
 ## Command Line Options
 
 ```bash
-python /app/find_video_duplicates.py /videos [OPTIONS]
+python /app/scripts/find_video_duplicates.py /videos [OPTIONS]
 
 Options:
   --dry-run                       Show duplicates without moving files
@@ -136,7 +136,7 @@ The tool provides flexible folder scanning to suit different organizational need
 By default, only the root directory is scanned:
 
 ```bash
-docker-compose exec video-dedup python /app/find_video_duplicates.py /videos
+docker-compose exec video-dedup python /app/scripts/find_video_duplicates.py /videos
 ```
 
 This scans only `/videos/` and ignores any subfolders.
@@ -146,7 +146,7 @@ This scans only `/videos/` and ignores any subfolders.
 To scan the root directory plus all subfolders recursively:
 
 ```bash
-docker-compose exec video-dedup python /app/find_video_duplicates.py /videos --include-subfolders
+docker-compose exec video-dedup python /app/scripts/find_video_duplicates.py /videos --include-subfolders
 ```
 
 ### Scan Specific Subfolders
@@ -155,10 +155,10 @@ To scan only specific subfolders (root is not included unless specified):
 
 ```bash
 # Scan only the 'movies' and 'tv_shows' subfolders
-docker-compose exec video-dedup python /app/find_video_duplicates.py /videos --include-subfolders movies tv_shows
+docker-compose exec video-dedup python /app/scripts/find_video_duplicates.py /videos --include-subfolders movies tv_shows
 
 # Scan root plus specific subfolders
-docker-compose exec video-dedup python /app/find_video_duplicates.py /videos --include-subfolders . movies tv_shows
+docker-compose exec video-dedup python /app/scripts/find_video_duplicates.py /videos --include-subfolders . movies tv_shows
 ```
 
 ### Exclude Root Directory
@@ -167,10 +167,10 @@ To scan only subfolders and exclude the root directory:
 
 ```bash
 # Scan all subfolders, excluding root
-docker-compose exec video-dedup python /app/find_video_duplicates.py /videos --include-subfolders --exclude-root
+docker-compose exec video-dedup python /app/scripts/find_video_duplicates.py /videos --include-subfolders --exclude-root
 
 # Scan specific subfolders only, excluding root
-docker-compose exec video-dedup python /app/find_video_duplicates.py /videos --include-subfolders movies tv_shows --exclude-root
+docker-compose exec video-dedup python /app/scripts/find_video_duplicates.py /videos --include-subfolders movies tv_shows --exclude-root
 ```
 
 ### Scan External Folders (Absolute Paths)
@@ -179,13 +179,13 @@ You can also scan folders outside the base directory by using absolute paths. Th
 
 ```bash
 # Scan base directory plus external folders
-docker-compose exec video-dedup python /app/find_video_duplicates.py /tmp/master-vids/ --include-subfolders /new/vids-a/ /new/vids-c/
+docker-compose exec video-dedup python /app/scripts/find_video_duplicates.py /tmp/master-vids/ --include-subfolders /new/vids-a/ /new/vids-c/
 
 # Scan only external folders (exclude base directory)
-docker-compose exec video-dedup python /app/find_video_duplicates.py /tmp/master-vids/ --include-subfolders /new/vids-a/ /new/vids-c/ --exclude-root
+docker-compose exec video-dedup python /app/scripts/find_video_duplicates.py /tmp/master-vids/ --include-subfolders /new/vids-a/ /new/vids-c/ --exclude-root
 
 # Mix relative and absolute paths
-docker-compose exec video-dedup python /app/find_video_duplicates.py /videos --include-subfolders ./local-subfolder /external/videos/
+docker-compose exec video-dedup python /app/scripts/find_video_duplicates.py /videos --include-subfolders ./local-subfolder /external/videos/
 ```
 
 **How it works:**
@@ -252,7 +252,7 @@ Videos are sometimes upscaled from lower resolutions (e.g., 720p content encoded
 
 ```bash
 # Run with upscaling analysis
-docker-compose exec video-dedup python /app/find_video_duplicates.py /videos --detect-upscaling
+docker-compose exec video-dedup python /app/scripts/find_video_duplicates.py /videos --detect-upscaling
 ```
 
 ### Detection Methods
@@ -364,10 +364,10 @@ Safely delete all videos marked as `DELETE_CANDIDATE`.
 
 ```bash
 # Show what would be deleted (dry run)
-docker-compose exec video-dedup python /app/dedup_delete.py /videos
+docker-compose exec video-dedup python /app/scripts/dedup_delete.py /videos
 
 # Actually delete the files
-docker-compose exec video-dedup python /app/dedup_delete.py /videos --confirm
+docker-compose exec video-dedup python /app/scripts/dedup_delete.py /videos --confirm
 ```
 
 **Features:**
@@ -387,7 +387,7 @@ Restore all videos marked as `KEEP` to their original locations.
 
 ```bash
 # Restore all KEEP files to original locations
-docker-compose exec video-dedup python /app/dedup_restore.py /videos
+docker-compose exec video-dedup python /app/scripts/dedup_restore.py /videos
 ```
 
 **Features:**
@@ -411,19 +411,19 @@ Complete workflow from detection to cleanup:
 
 ```bash
 # 1. Detect duplicates
-docker-compose exec video-dedup python /app/find_video_duplicates.py /videos --include-subfolders
+docker-compose exec video-dedup python /app/scripts/find_video_duplicates.py /videos --include-subfolders
 
 # 2. Review .deduped/ folder and metadata JSON files
 ls -la /videos/.deduped/
 
 # 3. Preview what would be deleted (optional)
-docker-compose exec video-dedup python /app/dedup_delete.py /videos
+docker-compose exec video-dedup python /app/scripts/dedup_delete.py /videos
 
 # 4. Delete candidates to free space
-docker-compose exec video-dedup python /app/dedup_delete.py /videos --confirm
+docker-compose exec video-dedup python /app/scripts/dedup_delete.py /videos --confirm
 
 # 5. Restore keep files back to original locations
-docker-compose exec video-dedup python /app/dedup_restore.py /videos
+docker-compose exec video-dedup python /app/scripts/dedup_restore.py /videos
 ```
 
 ## Troubleshooting
