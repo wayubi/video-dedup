@@ -20,7 +20,8 @@ The tool uses a two-tier approach:
 - ✅ Handles 15% length differences (accounts for cuts/additions)
 - ✅ Automatic fallback from audio to visual analysis
 - ✅ **Upscaling detection** - identifies fake 1080p/4K videos (720p upscaled)
-- ✅ Organizes duplicates into numbered folders
+- ✅ **Flexible folder scanning** - scan root only, all subfolders, or specific subfolders
+- ✅ **Smart organization** - moves duplicates to hidden `.deduped/` folder
 - ✅ Generates JSON report with detailed results
 - ✅ Supports MP4, MKV, AVI, MOV formats
 - ✅ Progress tracking with detailed console output
@@ -69,9 +70,11 @@ docker-compose down
 python /app/find_video_duplicates.py /videos [OPTIONS]
 
 Options:
-  --dry-run              Show duplicates without moving files
-  --report FILENAME      Save JSON report (default: duplicates_report.json)
-  --detect-upscaling     Analyze videos for upscaling (720p encoded as 1080p/4K)
+  --dry-run                       Show duplicates without moving files
+  --report FILENAME               Save JSON report (default: duplicates_report.json)
+  --detect-upscaling              Analyze videos for upscaling (720p encoded as 1080p/4K)
+  --include-subfolders [PATH...]  Include subfolders in scan. Without paths: all subfolders. With paths: only specified folders.
+  --exclude-root                  Exclude root directory (use with --include-subfolders)
 ```
 
 ## Output Structure
@@ -80,12 +83,13 @@ After running, your directory will look like:
 
 ```
 videos/
-├── duplicate_set_001/          # All copies of the same video
-│   ├── video_1080p.mp4
-│   └── video_720p_with_intro.mkv
-├── duplicate_set_002/
-│   ├── original.avi
-│   └── reencoded_480p.mp4
+├── .deduped/                   # Hidden folder containing all duplicates
+│   ├── duplicate_set_001/      # All copies of the same video
+│   │   ├── video_1080p.mp4
+│   │   └── video_720p_with_intro.mkv
+│   └── duplicate_set_002/
+│       ├── original.avi
+│       └── reencoded_480p.mp4
 ├── unique_video.mp4            # Non-duplicates stay in place
 └── duplicates_report.json      # Detailed analysis report
 ```
@@ -118,6 +122,62 @@ The JSON report contains:
   ]
 }
 ```
+
+## Folder Scanning Options
+
+The tool provides flexible folder scanning to suit different organizational needs.
+
+### Default Behavior (Root Only)
+
+By default, only the root directory is scanned:
+
+```bash
+docker-compose exec video-dedup python /app/find_video_duplicates.py /videos
+```
+
+This scans only `/videos/` and ignores any subfolders.
+
+### Scan All Subfolders
+
+To scan the root directory plus all subfolders recursively:
+
+```bash
+docker-compose exec video-dedup python /app/find_video_duplicates.py /videos --include-subfolders
+```
+
+### Scan Specific Subfolders
+
+To scan only specific subfolders (root is not included unless specified):
+
+```bash
+# Scan only the 'movies' and 'tv_shows' subfolders
+docker-compose exec video-dedup python /app/find_video_duplicates.py /videos --include-subfolders movies tv_shows
+
+# Scan root plus specific subfolders
+docker-compose exec video-dedup python /app/find_video_duplicates.py /videos --include-subfolders . movies tv_shows
+```
+
+### Exclude Root Directory
+
+To scan only subfolders and exclude the root directory:
+
+```bash
+# Scan all subfolders, excluding root
+docker-compose exec video-dedup python /app/find_video_duplicates.py /videos --include-subfolders --exclude-root
+
+# Scan specific subfolders only, excluding root
+docker-compose exec video-dedup python /app/find_video_duplicates.py /videos --include-subfolders movies tv_shows --exclude-root
+```
+
+### Examples
+
+| Command | Scanned Locations |
+|---------|-------------------|
+| `python find_video_duplicates.py /videos` | Root only |
+| `python find_video_duplicates.py /videos --include-subfolders` | Root + all subfolders |
+| `python find_video_duplicates.py /videos --include-subfolders movies` | `movies/` subfolder only |
+| `python find_video_duplicates.py /videos --include-subfolders . movies` | Root + `movies/` subfolder |
+| `python find_video_duplicates.py /videos --include-subfolders --exclude-root` | All subfolders (no root) |
 
 ## How Duplicate Detection Works
 
