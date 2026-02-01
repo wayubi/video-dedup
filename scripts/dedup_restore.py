@@ -68,24 +68,24 @@ def get_associated_video_path(json_path: str) -> Optional[str]:
     return None
 
 
-def find_keep_files(set_path: str) -> List[Tuple[str, str, Dict]]:
+def find_all_files(set_path: str) -> List[Tuple[str, str, Dict]]:
     """
-    Find all KEEP files in a duplicate set.
+    Find all video files in a duplicate set (regardless of recommendation).
     Returns list of (video_path, json_path, metadata) tuples.
     """
-    keep_files = []
+    all_files = []
     
     for file in os.listdir(set_path):
         if file.endswith('.json'):
             json_path = os.path.join(set_path, file)
             metadata = load_video_metadata(json_path)
             
-            if metadata and metadata.get('recommendation') == 'KEEP':
+            if metadata:  # Restore ALL files with valid metadata, not just KEEP
                 video_path = get_associated_video_path(json_path)
                 if video_path:
-                    keep_files.append((video_path, json_path, metadata))
+                    all_files.append((video_path, json_path, metadata))
     
-    return keep_files
+    return all_files
 
 
 def restore_file(video_path: str, json_path: str, metadata: Dict) -> Tuple[bool, str, str, bool]:
@@ -153,39 +153,41 @@ def main():
         print("Nothing to restore.")
         sys.exit(0)
     
-    # Find all KEEP files
-    all_keep_files = []
+    # Find all files in duplicate sets
+    all_files = []
     for set_path in sets:
-        keep_files = find_keep_files(set_path)
-        all_keep_files.extend([(set_path, video, json_file, metadata) 
-                               for video, json_file, metadata in keep_files])
+        files = find_all_files(set_path)
+        all_files.extend([(set_path, video, json_file, metadata) 
+                          for video, json_file, metadata in files])
     
-    if not all_keep_files:
-        print("No KEEP files found in .deduped folder.")
+    if not all_files:
+        print("No files found in .deduped folder.")
         print("Nothing to restore.")
         sys.exit(0)
     
     # Calculate totals
-    total_size = sum(os.path.getsize(video) for _, video, _, _ in all_keep_files)
+    total_size = sum(os.path.getsize(video) for _, video, _, _ in all_files)
     
     # Show summary
     print(f"\n{'='*60}")
     print(f"DEDUP RESTORE")
     print(f"{'='*60}")
-    print(f"\nFound {len(all_keep_files)} files to restore across {len(sets)} sets")
+    print(f"\nFound {len(all_files)} files to restore across {len(sets)} sets")
     print(f"Total size: {format_bytes(total_size)}")
     print(f"\nFiles to restore:")
     
-    for set_path, video_path, json_path, metadata in all_keep_files:
+    for set_path, video_path, json_path, metadata in all_files:
         set_name = os.path.basename(set_path)
         video_name = os.path.basename(video_path)
         size = os.path.getsize(video_path)
         original_path = metadata.get('original_full_path', 'Unknown')
         quality_score = metadata.get('quality_score', 0)
+        recommendation = metadata.get('recommendation', 'Unknown')
         
         print(f"\n  [{set_name}] {video_name}")
         print(f"    Size: {format_bytes(size)}")
         print(f"    Quality Score: {quality_score}")
+        print(f"    Recommendation: {recommendation}")
         print(f"    Restore to: {original_path}")
     
     print(f"\n{'='*60}")
@@ -195,7 +197,7 @@ def main():
     restored_files = []
     failed_files = []
     
-    for set_path, video_path, json_path, metadata in all_keep_files:
+    for set_path, video_path, json_path, metadata in all_files:
         set_name = os.path.basename(set_path)
         video_name = os.path.basename(video_path)
         size = os.path.getsize(video_path)
@@ -250,11 +252,11 @@ def main():
     
     # Calculate totals
     restored_size = sum(f["size_bytes"] for f in restored_files)
-    cleanup_complete = len(failed_files) == 0 and len(restored_files) == len(all_keep_files)
+    cleanup_complete = len(failed_files) == 0 and len(restored_files) == len(all_files)
     
     # Generate report
     report = {
-        "action": "restore_keep_files",
+        "action": "restore_all_files",
         "timestamp": datetime.now().isoformat() + "Z",
         "base_directory": base_dir,
         "summary": {
@@ -286,7 +288,7 @@ def main():
         print(f"\n⚠️  {len(failed_files)} files could not be restored. Check report for details.")
         sys.exit(1)
     else:
-        print(f"\n✓ All KEEP files have been restored to their original locations.")
+        print(f"\n✓ All files have been restored to their original locations.")
         if cleanup_complete:
             print(f"✓ .deduped folder has been cleaned up.")
 
