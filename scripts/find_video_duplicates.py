@@ -235,7 +235,14 @@ def compare_audio_fingerprints(fp1: np.ndarray, fp2: np.ndarray) -> float:
     fp2 = fp2[:min_len]
     
     # Compute correlation
-    if np.std(fp1) == 0 or np.std(fp2) == 0:
+    std1 = np.std(fp1)
+    std2 = np.std(fp2)
+    if std1 == 0 or std2 == 0:
+        return 0.0
+    
+    # Reject low-variance fingerprints (indicates silence/static)
+    MIN_FINGERPRINT_VARIANCE = 0.1
+    if std1 < MIN_FINGERPRINT_VARIANCE or std2 < MIN_FINGERPRINT_VARIANCE:
         return 0.0
     
     correlation = np.corrcoef(fp1, fp2)[0, 1]
@@ -429,11 +436,11 @@ def is_same_video(video1: Tuple[str, float], video2: Tuple[str, float]) -> Tuple
                 fp2 = generate_audio_fingerprint(audio_data2)
                 
                 similarity = compare_audio_fingerprints(fp1, fp2)
-                if similarity > 0.75:  # Threshold for match
+                if similarity > 0.90:  # Increased threshold for stricter matching
                     samples_match += 1
         
-        # Consider it a match if at least half the samples match
-        if total_samples > 0 and samples_match >= total_samples / 2:
+        # Require ALL samples to match (not just half) for audio fingerprint match
+        if total_samples > 0 and samples_match >= total_samples:
             return True, "audio_fingerprint"
     
     # Fallback to visual fingerprinting
