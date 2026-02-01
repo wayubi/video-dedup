@@ -984,31 +984,56 @@ def calculate_quality_score(metadata: Dict) -> Tuple[int, str]:
     else:
         reasons.append(f"resolution ({width}x{height})")
     
-    # 2. Bitrate scoring (30 points max) - scaled to resolution
+    # 2. Bitrate scoring (30 points max) - scaled to resolution and codec efficiency
     bitrate = video_info.get("video_bitrate_kbps", 0)
     if resolution_pixels > 0:
+        # Codec efficiency multipliers (relative to H.264 baseline)
+        CODEC_EFFICIENCY = {
+            'av1': 3.0,      # AV1 is ~3x more efficient than H.264
+            'hevc': 2.0,     # HEVC/H.265 is ~2x more efficient
+            'h265': 2.0,
+            'h264': 1.0,     # Baseline
+            'avc': 1.0,
+        }
+        
+        # Normalize bitrate by codec efficiency
+        codec = video_info.get("video_codec", "unknown").lower()
+        efficiency_multiplier = CODEC_EFFICIENCY.get(codec, 1.0)
+        effective_bitrate = int(bitrate * efficiency_multiplier)
+        
         # Calculate expected bitrate for this resolution (very rough estimates)
         expected_4k_bitrate = 25000
         expected_1080p_bitrate = 8000
         expected_720p_bitrate = 4000
         
         # Use height-based tiers for bitrate comparison (consistent with resolution scoring)
-        bitrate_ratio = min(1.0, bitrate / expected_4k_bitrate) if height >= 2160 else \
-                       min(1.0, bitrate / expected_1080p_bitrate) if height >= 1080 else \
-                       min(1.0, bitrate / expected_720p_bitrate) if height >= 720 else \
-                       min(1.0, bitrate / 2000)
+        bitrate_ratio = min(1.0, effective_bitrate / expected_4k_bitrate) if height >= 2160 else \
+                       min(1.0, effective_bitrate / expected_1080p_bitrate) if height >= 1080 else \
+                       min(1.0, effective_bitrate / expected_720p_bitrate) if height >= 720 else \
+                       min(1.0, effective_bitrate / 2000)
         
         bitrate_score = int(30 * bitrate_ratio)
         score += bitrate_score
         
-        if bitrate_score >= 25:
-            reasons.append(f"excellent bitrate ({bitrate} kbps)")
-        elif bitrate_score >= 15:
-            reasons.append(f"good bitrate ({bitrate} kbps)")
-        elif bitrate > 0:
-            reasons.append(f"moderate bitrate ({bitrate} kbps)")
+        # Report effective bitrate for modern codecs
+        if efficiency_multiplier > 1.0:
+            if bitrate_score >= 25:
+                reasons.append(f"excellent effective bitrate ({bitrate} kbps × {efficiency_multiplier:.0f} = {effective_bitrate} kbps)")
+            elif bitrate_score >= 15:
+                reasons.append(f"good effective bitrate ({bitrate} kbps × {efficiency_multiplier:.0f} = {effective_bitrate} kbps)")
+            elif bitrate > 0:
+                reasons.append(f"moderate effective bitrate ({bitrate} kbps × {efficiency_multiplier:.0f} = {effective_bitrate} kbps)")
+            else:
+                reasons.append("unknown bitrate")
         else:
-            reasons.append("unknown bitrate")
+            if bitrate_score >= 25:
+                reasons.append(f"excellent bitrate ({bitrate} kbps)")
+            elif bitrate_score >= 15:
+                reasons.append(f"good bitrate ({bitrate} kbps)")
+            elif bitrate > 0:
+                reasons.append(f"moderate bitrate ({bitrate} kbps)")
+            else:
+                reasons.append("unknown bitrate")
     
     # 3. Codec efficiency (20 points max)
     codec = video_info.get("video_codec", "unknown").lower()
