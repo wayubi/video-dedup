@@ -65,10 +65,10 @@ def get_associated_video_path(json_path: str) -> Optional[str]:
     return None
 
 
-def find_delete_candidates(set_path: str) -> List[Tuple[str, str, Dict]]:
+def find_delete_candidates(set_path: str) -> List[Tuple[str, str, str, Dict]]:
     """
     Find all DELETE_CANDIDATE files in a duplicate set.
-    Returns list of (video_path, json_path, metadata) tuples.
+    Returns list of (video_path, json_path, marker_path, metadata) tuples.
     """
     candidates = []
     
@@ -80,13 +80,17 @@ def find_delete_candidates(set_path: str) -> List[Tuple[str, str, Dict]]:
             if metadata and metadata.get('recommendation') == 'DELETE_CANDIDATE':
                 video_path = get_associated_video_path(json_path)
                 if video_path:
-                    candidates.append((video_path, json_path, metadata))
+                    # Find the marker file (.delete)
+                    marker_path = video_path + '.delete'
+                    if not os.path.exists(marker_path):
+                        marker_path = None
+                    candidates.append((video_path, json_path, marker_path, metadata))
     
     return candidates
 
 
-def delete_file_pair(video_path: str, json_path: str) -> Tuple[bool, str]:
-    """Delete a video file and its associated JSON. Returns (success, error_message)."""
+def delete_file_pair(video_path: str, json_path: str, marker_path: Optional[str] = None) -> Tuple[bool, str]:
+    """Delete a video file, its associated JSON, and marker file. Returns (success, error_message)."""
     try:
         # Delete video file
         if os.path.exists(video_path):
@@ -95,6 +99,10 @@ def delete_file_pair(video_path: str, json_path: str) -> Tuple[bool, str]:
         # Delete JSON file
         if os.path.exists(json_path):
             os.remove(json_path)
+        
+        # Delete marker file if it exists
+        if marker_path and os.path.exists(marker_path):
+            os.remove(marker_path)
         
         return True, ""
     except Exception as e:
@@ -131,8 +139,8 @@ def main():
     all_candidates = []
     for set_path in sets:
         candidates = find_delete_candidates(set_path)
-        all_candidates.extend([(set_path, video, json_file, metadata) 
-                               for video, json_file, metadata in candidates])
+        all_candidates.extend([(set_path, video, json_file, marker_file, metadata) 
+                               for video, json_file, marker_file, metadata in candidates])
     
     if not all_candidates:
         print("No DELETE_CANDIDATE files found.")
@@ -140,7 +148,7 @@ def main():
         sys.exit(0)
     
     # Calculate totals
-    total_size = sum(os.path.getsize(video) for _, video, _, _ in all_candidates)
+    total_size = sum(os.path.getsize(video) for _, video, _, _, _ in all_candidates)
     
     # Show summary
     mode = "DRY RUN" if not args.confirm else "LIVE DELETE"
@@ -151,7 +159,7 @@ def main():
     print(f"Total space to be freed: {format_bytes(total_size)}")
     print(f"\nFiles to delete:")
     
-    for set_path, video_path, json_path, metadata in all_candidates:
+    for set_path, video_path, json_path, marker_path, metadata in all_candidates:
         set_name = os.path.basename(set_path)
         video_name = os.path.basename(video_path)
         size = os.path.getsize(video_path)
@@ -175,13 +183,13 @@ def main():
     deleted_files = []
     failed_files = []
     
-    for set_path, video_path, json_path, metadata in all_candidates:
+    for set_path, video_path, json_path, marker_path, metadata in all_candidates:
         set_name = os.path.basename(set_path)
         video_name = os.path.basename(video_path)
         size = os.path.getsize(video_path)
         
         if args.confirm:
-            success, error = delete_file_pair(video_path, json_path)
+            success, error = delete_file_pair(video_path, json_path, marker_path)
         else:
             success, error = True, ""  # Simulate success in dry-run
         

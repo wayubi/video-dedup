@@ -971,22 +971,18 @@ def calculate_quality_score(metadata: Dict) -> Tuple[int, str]:
     height = video_info.get("height", 0)
     resolution_pixels = width * height
     
-    # 1. Resolution scoring (25 points max)
-    if resolution_pixels >= 3840 * 2160:  # 4K+
-        score += 25
-        reasons.append("4K resolution")
-    elif resolution_pixels >= 1920 * 1080:  # 1080p
-        score += 20
-        reasons.append("1080p resolution")
-    elif resolution_pixels >= 1280 * 720:  # 720p
-        score += 12
-        reasons.append("720p resolution")
-    elif resolution_pixels >= 720 * 480:  # SD
-        score += 5
-        reasons.append("SD resolution")
+    # 1. Resolution scoring - proportional to pixel count (base is 1920x1080)
+    max_1080p_pixels = 1920 * 1080
+    resolution_score = int(25 * resolution_pixels / max_1080p_pixels)
+    score += resolution_score
+    if resolution_pixels >= 3840 * 2160:
+        reasons.append(f"4K resolution ({width}x{height})")
+    elif resolution_pixels >= 1920 * 1080:
+        reasons.append(f"1080p resolution ({width}x{height})")
+    elif resolution_pixels >= 1280 * 720:
+        reasons.append(f"720p resolution ({width}x{height})")
     else:
-        score += 2
-        reasons.append("low resolution")
+        reasons.append(f"resolution ({width}x{height})")
     
     # 2. Bitrate scoring (30 points max) - scaled to resolution
     bitrate = video_info.get("video_bitrate_kbps", 0)
@@ -996,10 +992,10 @@ def calculate_quality_score(metadata: Dict) -> Tuple[int, str]:
         expected_1080p_bitrate = 8000
         expected_720p_bitrate = 4000
         
-        max_pixels = 3840 * 2160
-        bitrate_ratio = min(1.0, bitrate / expected_4k_bitrate) if resolution_pixels >= 3840 * 2160 else \
-                       min(1.0, bitrate / expected_1080p_bitrate) if resolution_pixels >= 1920 * 1080 else \
-                       min(1.0, bitrate / expected_720p_bitrate) if resolution_pixels >= 1280 * 720 else \
+        # Use height-based tiers for bitrate comparison (consistent with resolution scoring)
+        bitrate_ratio = min(1.0, bitrate / expected_4k_bitrate) if height >= 2160 else \
+                       min(1.0, bitrate / expected_1080p_bitrate) if height >= 1080 else \
+                       min(1.0, bitrate / expected_720p_bitrate) if height >= 720 else \
                        min(1.0, bitrate / 2000)
         
         bitrate_score = int(30 * bitrate_ratio)
@@ -1051,7 +1047,7 @@ def calculate_quality_score(metadata: Dict) -> Tuple[int, str]:
         reasons.append(f"{fps}fps")
     
     reason_str = ", ".join(reasons)
-    return min(100, max(0, score)), reason_str
+    return max(0, score), reason_str
 
 
 def analyze_duplicate_set(videos_with_metadata: List[Tuple[str, Dict]]) -> Dict[str, Dict]:
@@ -1083,8 +1079,8 @@ def analyze_duplicate_set(videos_with_metadata: List[Tuple[str, Dict]]) -> Dict[
         results[video_path]["reason"] = "Only copy of this content"
         return results
     
-    # Find best video based on quality score
-    best_path = max(results.keys(), key=lambda p: results[p]["quality_score"])
+    # Find best video based on quality score, tie-break by width and bitrate
+    best_path = max(results.keys(), key=lambda p: (results[p]["quality_score"], results[p]["metadata"].get("video", {}).get("width", 0), results[p]["metadata"].get("video", {}).get("video_bitrate_kbps", 0)))
     best_score = results[best_path]["quality_score"]
     best_metadata = results[best_path]["metadata"]
     
@@ -1095,7 +1091,7 @@ def analyze_duplicate_set(videos_with_metadata: List[Tuple[str, Dict]]) -> Dict[
     best_bitrate = best_video_info.get("video_bitrate_kbps", 0)
     
     results[best_path]["recommendation"] = "KEEP"
-    results[best_path]["reason"] = f"Best quality: {best_res}, {best_codec}, {results[best_path]['quality_score']}/100 score"
+    results[best_path]["reason"] = f"Best quality: {best_res}, {best_codec}, {results[best_path]['quality_score']} score"
     
     # Mark others as DELETE_CANDIDATE with reference to best
     for video_path, result in results.items():
@@ -1110,15 +1106,21 @@ def analyze_duplicate_set(videos_with_metadata: List[Tuple[str, Dict]]) -> Dict[
             
             # Generate reason
             if score_diff >= 30:
-                reason = f"Significantly lower quality ({score}/100 vs {best_score}/100)"
+                reason = f"Significantly lower quality ({score} vs {best_score})"
             elif score_diff >= 15:
-                reason = f"Lower quality ({score}/100 vs {best_score}/100)"
+                reason = f"Lower quality ({score} vs {best_score})"
             else:
-                reason = f"Lower quality ({score}/100 vs {best_score}/100)"
+                reason = f"Lower quality ({score} vs {best_score})"
             
             # Add specific technical reasons
-            if video_res != best_res:
-                reason += f"; lower resolution ({video_res} vs {best_res})"
+            video_width = video_info.get("width", 0)
+            video_height = video_info.get("height", 0)
+            best_width = best_video_info.get("width", 0)
+            best_height = best_video_info.get("height", 0)
+            video_pixels = video_width * video_height
+            best_pixels = best_width * best_height
+            if video_pixels < best_pixels:
+                reason += f"; lower resolution ({video_width}x{video_height} vs {best_width}x{best_height})"
             if video_codec != best_codec and best_codec in ['hevc', 'h265', 'av1']:
                 reason += f"; less efficient codec ({video_codec} vs {best_codec})"
             if video_bitrate < best_bitrate * 0.7 and video_bitrate > 0:
@@ -1129,7 +1131,7 @@ def analyze_duplicate_set(videos_with_metadata: List[Tuple[str, Dict]]) -> Dict[
             result["better_alternative"] = {
                 "filename": os.path.basename(best_path),
                 "quality_score": best_score,
-                "reason": f"Better quality: {best_res}, {best_codec}, {best_score}/100 score"
+                "reason": f"Better quality: {best_res}, {best_codec}, {best_score} score"
             }
     
     return results
@@ -1211,6 +1213,19 @@ def organize_duplicates(directory: str, duplicate_groups: List[List[str]], dry_r
                     json_path = os.path.join(folder_path, json_filename)
                     with open(json_path, 'w') as f:
                         json.dump(json_data, f, indent=2)
+                    
+                    # Create marker file (.keep or .delete)
+                    recommendation = analysis.get("recommendation", "")
+                    if recommendation == "KEEP":
+                        marker_filename = f"{os.path.basename(dest_path)}.keep"
+                        marker_path = os.path.join(folder_path, marker_filename)
+                        open(marker_path, 'w').close()
+                        print(f"  -> Created marker: {marker_filename}")
+                    elif recommendation == "DELETE_CANDIDATE":
+                        marker_filename = f"{os.path.basename(dest_path)}.delete"
+                        marker_path = os.path.join(folder_path, marker_filename)
+                        open(marker_path, 'w').close()
+                        print(f"  -> Created marker: {marker_filename}")
                     
                     # Move the video file
                     shutil.move(video_path, dest_path)

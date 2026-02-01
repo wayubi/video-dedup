@@ -68,10 +68,10 @@ def get_associated_video_path(json_path: str) -> Optional[str]:
     return None
 
 
-def find_all_files(set_path: str) -> List[Tuple[str, str, Dict]]:
+def find_all_files(set_path: str) -> List[Tuple[str, str, Optional[str], Dict]]:
     """
-    Find all video files in a duplicate set (regardless of recommendation).
-    Returns list of (video_path, json_path, metadata) tuples.
+    Find all files in a duplicate set (not just KEEP files).
+    Returns list of (video_path, json_path, marker_path, metadata) tuples.
     """
     all_files = []
     
@@ -83,12 +83,20 @@ def find_all_files(set_path: str) -> List[Tuple[str, str, Dict]]:
             if metadata:  # Restore ALL files with valid metadata, not just KEEP
                 video_path = get_associated_video_path(json_path)
                 if video_path:
-                    all_files.append((video_path, json_path, metadata))
+                    # Find the marker file (.keep or .delete)
+                    marker_path = None
+                    keep_marker = video_path + '.keep'
+                    delete_marker = video_path + '.delete'
+                    if os.path.exists(keep_marker):
+                        marker_path = keep_marker
+                    elif os.path.exists(delete_marker):
+                        marker_path = delete_marker
+                    all_files.append((video_path, json_path, marker_path, metadata))
     
     return all_files
 
 
-def restore_file(video_path: str, json_path: str, metadata: Dict) -> Tuple[bool, str, str, bool]:
+def restore_file(video_path: str, json_path: str, marker_path: Optional[str], metadata: Dict) -> Tuple[bool, str, str, bool]:
     """
     Restore a video file to its original location.
     Returns (success, destination_path, error_message, collision_handled).
@@ -122,6 +130,10 @@ def restore_file(video_path: str, json_path: str, metadata: Dict) -> Tuple[bool,
         # Delete the JSON file
         if os.path.exists(json_path):
             os.remove(json_path)
+        
+        # Delete the marker file if it exists
+        if marker_path and os.path.exists(marker_path):
+            os.remove(marker_path)
         
         return True, destination, "", collision_handled
         
@@ -157,8 +169,8 @@ def main():
     all_files = []
     for set_path in sets:
         files = find_all_files(set_path)
-        all_files.extend([(set_path, video, json_file, metadata) 
-                          for video, json_file, metadata in files])
+        all_files.extend([(set_path, video, json_file, marker_file, metadata) 
+                          for video, json_file, marker_file, metadata in files])
     
     if not all_files:
         print("No files found in .deduped folder.")
@@ -166,7 +178,7 @@ def main():
         sys.exit(0)
     
     # Calculate totals
-    total_size = sum(os.path.getsize(video) for _, video, _, _ in all_files)
+    total_size = sum(os.path.getsize(video) for _, video, _, _, _ in all_files)
     
     # Show summary
     print(f"\n{'='*60}")
@@ -176,7 +188,7 @@ def main():
     print(f"Total size: {format_bytes(total_size)}")
     print(f"\nFiles to restore:")
     
-    for set_path, video_path, json_path, metadata in all_files:
+    for set_path, video_path, json_path, marker_path, metadata in all_files:
         set_name = os.path.basename(set_path)
         video_name = os.path.basename(video_path)
         size = os.path.getsize(video_path)
@@ -197,12 +209,12 @@ def main():
     restored_files = []
     failed_files = []
     
-    for set_path, video_path, json_path, metadata in all_files:
+    for set_path, video_path, json_path, marker_path, metadata in all_files:
         set_name = os.path.basename(set_path)
         video_name = os.path.basename(video_path)
         size = os.path.getsize(video_path)
         
-        success, destination, error, collision = restore_file(video_path, json_path, metadata)
+        success, destination, error, collision = restore_file(video_path, json_path, marker_path, metadata)
         
         file_info = {
             "set": set_name,
