@@ -3,9 +3,8 @@ services:
     build: .
     container_name: video-dedup
     volumes:
+      - ./scripts:/opt/video-dedup/scripts
       # Mount your video folder here (change the left side to your actual path)
-      - ./videos:/videos
-    working_dir: /videos
-    stdin_open: true
-    tty: true
+      # - ./videos:/videos
+    working_dir: /opt/video-dedup
     command: tail -f /dev/null

@@ -973,7 +973,7 @@ def calculate_quality_score(metadata: Dict) -> Tuple[int, str]:
     
     # 1. Resolution scoring - proportional to pixel count (base is 1920x1080)
     max_1080p_pixels = 1920 * 1080
-    resolution_score = int(25 * resolution_pixels / max_1080p_pixels)
+    resolution_score = int(40 * resolution_pixels / max_1080p_pixels)
     score += resolution_score
     if resolution_pixels >= 3840 * 2160:
         reasons.append(f"4K resolution ({width}x{height})")
@@ -984,7 +984,20 @@ def calculate_quality_score(metadata: Dict) -> Tuple[int, str]:
     else:
         reasons.append(f"resolution ({width}x{height})")
     
-    # 2. Bitrate scoring (30 points max) - scaled to resolution and codec efficiency
+    # 2. Resolution tier bonuses - prioritize higher resolution
+    pixels_720p = 1280 * 720  # 921,600 pixels
+    pixels_1080p = 1920 * 1080  # 2,073,600 pixels
+    
+    if resolution_pixels >= pixels_1080p:
+        score += 25
+        reasons.append(f"1080p+ resolution ({width}x{height})")
+    elif resolution_pixels >= pixels_720p:
+        score += 15
+        reasons.append(f"720p+ resolution ({width}x{height})")
+    else:
+        reasons.append(f"below 720p resolution ({width}x{height})")
+    
+    # 3. Bitrate scoring (20 points max) - linear per-pixel minimum bitrate
     bitrate = video_info.get("video_bitrate_kbps", 0)
     if resolution_pixels > 0:
         # Codec efficiency multipliers (relative to H.264 baseline)
@@ -1001,41 +1014,47 @@ def calculate_quality_score(metadata: Dict) -> Tuple[int, str]:
         efficiency_multiplier = CODEC_EFFICIENCY.get(codec, 1.0)
         effective_bitrate = int(bitrate * efficiency_multiplier)
         
-        # Calculate expected bitrate for this resolution (very rough estimates)
-        expected_4k_bitrate = 25000
-        expected_1080p_bitrate = 8000
-        expected_720p_bitrate = 4000
+        # Calculate optimal bitrate: 2000 kbps per megapixel
+        megapixels = resolution_pixels / 1_000_000
+        optimal_bitrate = megapixels * 2000  # kbps
         
-        # Use height-based tiers for bitrate comparison (consistent with resolution scoring)
-        bitrate_ratio = min(1.0, effective_bitrate / expected_4k_bitrate) if height >= 2160 else \
-                       min(1.0, effective_bitrate / expected_1080p_bitrate) if height >= 1080 else \
-                       min(1.0, effective_bitrate / expected_720p_bitrate) if height >= 720 else \
-                       min(1.0, effective_bitrate / 2000)
+        # Calculate bitrate score - continuous scoring with diminishing returns above optimal
+        if effective_bitrate > 0 and optimal_bitrate > 0:
+            ratio = effective_bitrate / optimal_bitrate
+            
+            if ratio < 0.3:
+                # Below 30% of optimal: linear penalty
+                bitrate_score = int(20 * (ratio / 0.3))
+                bitrate_quality = "below optimal"
+            elif ratio < 1.0:
+                # Between 30% and 100%: linear scaling from 8 to 20 points
+                # This ensures smooth transition to the "above optimal" formula
+                bitrate_score = int(8 + 12 * (ratio - 0.3) / 0.7)
+                bitrate_quality = "approaching optimal"
+            else:
+                # Above 100%: diminishing returns but still increasing
+                # sqrt curve: score = 20 * sqrt(ratio), max 30 points
+                bitrate_score = min(30, int(20 * (ratio ** 0.5)))
+                bitrate_quality = "above optimal"
+        else:
+            bitrate_score = 0
+            bitrate_quality = "unknown"
         
-        bitrate_score = int(30 * bitrate_ratio)
         score += bitrate_score
         
-        # Report effective bitrate for modern codecs
-        if efficiency_multiplier > 1.0:
-            if bitrate_score >= 25:
-                reasons.append(f"excellent effective bitrate ({bitrate} kbps × {efficiency_multiplier:.0f} = {effective_bitrate} kbps)")
-            elif bitrate_score >= 15:
-                reasons.append(f"good effective bitrate ({bitrate} kbps × {efficiency_multiplier:.0f} = {effective_bitrate} kbps)")
-            elif bitrate > 0:
-                reasons.append(f"moderate effective bitrate ({bitrate} kbps × {efficiency_multiplier:.0f} = {effective_bitrate} kbps)")
+        # Report bitrate with ratio to optimal
+        if optimal_bitrate > 0:
+            ratio = effective_bitrate / optimal_bitrate if effective_bitrate > 0 else 0
+            if efficiency_multiplier > 1.0:
+                reasons.append(f"{bitrate_quality} effective bitrate ({bitrate} kbps × {efficiency_multiplier:.0f} = {effective_bitrate} kbps, {ratio:.2f}x optimal)")
             else:
-                reasons.append("unknown bitrate")
+                reasons.append(f"{bitrate_quality} bitrate ({effective_bitrate} kbps, {ratio:.2f}x optimal)")
+        elif bitrate > 0:
+            reasons.append(f"moderate bitrate ({bitrate} kbps)")
         else:
-            if bitrate_score >= 25:
-                reasons.append(f"excellent bitrate ({bitrate} kbps)")
-            elif bitrate_score >= 15:
-                reasons.append(f"good bitrate ({bitrate} kbps)")
-            elif bitrate > 0:
-                reasons.append(f"moderate bitrate ({bitrate} kbps)")
-            else:
-                reasons.append("unknown bitrate")
+            reasons.append("unknown bitrate")
     
-    # 3. Codec efficiency (20 points max)
+    # 4. Codec efficiency (20 points max)
     codec = video_info.get("video_codec", "unknown").lower()
     if codec in ['hevc', 'h265', 'av1']:
         score += 20
@@ -1050,13 +1069,13 @@ def calculate_quality_score(metadata: Dict) -> Tuple[int, str]:
         score += 5
         reasons.append(f"codec: {codec}")
     
-    # 4. HDR bonus (15 points)
+    # 5. HDR bonus (15 points)
     hdr = video_info.get("hdr_format")
     if hdr:
         score += 15
         reasons.append(f"HDR support ({hdr})")
     
-    # 5. Frame rate (10 points max)
+    # 6. Frame rate (10 points max)
     fps = video_info.get("frame_rate", 0)
     if fps >= 59:  # 60fps
         score += 10

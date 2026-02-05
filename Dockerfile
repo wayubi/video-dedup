@@ -21,14 +21,3 @@ RUN pip install --no-cache-dir \
     pyacoustid \
     audioread \
     scikit-image
-
-# Create scripts directory and copy all scripts
-RUN mkdir -p /app/scripts
-COPY scripts/find_video_duplicates.py /app/scripts/
-COPY scripts/dedup_delete.py /app/scripts/
-COPY scripts/dedup_restore.py /app/scripts/
-
-WORKDIR /app
-
-# Keep container running
-CMD ["tail", "-f", "/dev/null"]
