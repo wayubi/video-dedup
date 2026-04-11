@@ -294,7 +294,7 @@ def find_videos(
     
     Args:
         directory: Base directory to scan
-        include_subfolders: None = no subfolders, empty list = all subfolders (except .deduped),
+        include_subfolders: None = no subfolders, empty list = all subfolders (except __deduped),
                            list of paths = only those specific subfolders
         exclude_root: If True, don't include videos from the root directory
     
@@ -304,11 +304,11 @@ def find_videos(
     videos = []
     abs_directory = os.path.abspath(directory)
     
-    # Always exclude the .deduped folder
-    deduped_folder = os.path.join(abs_directory, ".deduped")
+    # Always exclude the __deduped folder
+    deduped_folder = os.path.join(abs_directory, "__deduped")
     
     def is_in_deduped(path: str) -> bool:
-        """Check if path is inside the .deduped folder."""
+        """Check if path is inside the __deduped folder."""
         try:
             return os.path.commonpath([path, deduped_folder]) == deduped_folder or \
                    path.startswith(deduped_folder + os.sep)
@@ -327,9 +327,9 @@ def find_videos(
     else:
         # include_subfolders is a list (possibly empty)
         if len(include_subfolders) == 0:
-            # Include all subfolders recursively, but exclude .deduped
+            # Include all subfolders recursively, but exclude __deduped
             for root, _, files in os.walk(abs_directory):
-                # Skip if this directory is inside .deduped
+                # Skip if this directory is inside __deduped
                 if is_in_deduped(root):
                     continue
                 
@@ -366,9 +366,9 @@ def find_videos(
                     print(f"Warning: Specified path is not a directory: {subfolder}")
                     continue
                 
-                # Skip if it's the .deduped folder
+                # Skip if it's the __deduped folder
                 if is_in_deduped(subfolder_path):
-                    print(f"Warning: Skipping .deduped folder: {subfolder}")
+                    print(f"Warning: Skipping __deduped folder: {subfolder}")
                     continue
                 
                 folders_to_scan.append(subfolder_path)
@@ -376,7 +376,7 @@ def find_videos(
             # Scan each folder recursively
             for folder in folders_to_scan:
                 for root, _, files in os.walk(folder):
-                    # Skip if this directory is inside .deduped
+                    # Skip if this directory is inside __deduped
                     if is_in_deduped(root):
                         continue
                     
@@ -1182,15 +1182,15 @@ def analyze_duplicate_set(videos_with_metadata: List[Tuple[str, Dict]]) -> Dict[
 
 
 def organize_duplicates(directory: str, duplicate_groups: List[List[str]], dry_run: bool = False):
-    """Move duplicate videos into .deduped/numbered folders with metadata JSON files."""
+    """Move duplicate videos into __deduped/numbered folders with metadata JSON files."""
     if not duplicate_groups:
         print("No duplicates found!")
         return
     
     print(f"\nFound {len(duplicate_groups)} duplicate sets")
     
-    # Create .deduped folder
-    deduped_base = os.path.join(directory, ".deduped")
+    # Create __deduped folder
+    deduped_base = os.path.join(directory, "__deduped")
     
     for i, group in enumerate(duplicate_groups, 1):
         folder_name = f"duplicate_set_{i:03d}"
@@ -1216,7 +1216,7 @@ def organize_duplicates(directory: str, duplicate_groups: List[List[str]], dry_r
             print(f"  - {rel_path} [{rec}, score: {score}]")
         
         if not dry_run:
-            # Create .deduped folder and set folder
+            # Create __deduped folder and set folder
             os.makedirs(folder_path, exist_ok=True)
             
             # Move all videos in the group and create metadata JSON files
@@ -1273,7 +1273,7 @@ def organize_duplicates(directory: str, duplicate_groups: List[List[str]], dry_r
                     
                     # Move the video file
                     shutil.move(video_path, dest_path)
-                    print(f"  -> Moved to .deduped/{folder_name}")
+                    print(f"  -> Moved to __deduped/{folder_name}")
                     print(f"  -> Created metadata: {json_filename}")
                     
                 except Exception as e:
@@ -1292,7 +1292,7 @@ def main():
     parser.add_argument('--detect-upscaling', action='store_true',
                         help='Detect videos that are upscaled from lower resolutions (e.g., 720p encoded as 4K). Adds upscaling analysis to the report.')
     parser.add_argument('--include-subfolders', nargs='*', metavar='PATH',
-                        help='Include subfolders in analysis. Without arguments: includes all subfolders (except .deduped). With arguments: includes only specified subfolder paths (relative to directory).')
+                        help='Include subfolders in analysis. Without arguments: includes all subfolders (except __deduped). With arguments: includes only specified subfolder paths (relative to directory).')
     parser.add_argument('--exclude-root', action='store_true',
                         help='Exclude videos from the root directory. Only useful with --include-subfolders.')
     

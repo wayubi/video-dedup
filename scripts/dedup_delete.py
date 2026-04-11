@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Dedup Delete Script
-Deletes all videos marked as DELETE_CANDIDATE from the .deduped folder.
+Deletes all videos marked as DELETE_CANDIDATE from the __deduped folder.
 Dry-run by default. Use --confirm to actually delete files.
 """
 
@@ -25,8 +25,8 @@ def format_bytes(bytes_val: float) -> str:
 
 
 def scan_deduped_folders(base_dir: str) -> List[str]:
-    """Scan .deduped folder for all duplicate set folders."""
-    deduped_path = os.path.join(base_dir, ".deduped")
+    """Scan __deduped folder for all duplicate set folders."""
+    deduped_path = os.path.join(base_dir, "__deduped")
     
     if not os.path.exists(deduped_path):
         return []
@@ -111,9 +111,9 @@ def delete_file_pair(video_path: str, json_path: str, marker_path: Optional[str]
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Delete videos marked as DELETE_CANDIDATE from .deduped folder'
+        description='Delete videos marked as DELETE_CANDIDATE from __deduped folder'
     )
-    parser.add_argument('directory', help='Base directory containing .deduped folder')
+    parser.add_argument('directory', help='Base directory containing __deduped folder')
     parser.add_argument('--confirm', action='store_true',
                         help='Actually delete files (dry-run by default)')
     parser.add_argument('--report', type=str, default='dedup_delete_report.json',
@@ -131,7 +131,7 @@ def main():
     sets = scan_deduped_folders(base_dir)
     
     if not sets:
-        print(f"No .deduped folder found in {base_dir}")
+        print(f"No __deduped folder found in {base_dir}")
         print("Nothing to delete.")
         sys.exit(0)
     

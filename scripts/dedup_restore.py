@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 Dedup Restore Script
-Restores all videos marked as KEEP from .deduped folder back to their original locations.
-After successful restore, removes files from .deduped and cleans up empty folders.
+Restores all videos marked as KEEP from __deduped folder back to their original locations.
+After successful restore, removes files from __deduped and cleans up empty folders.
 """
 
 import os
@@ -26,8 +26,8 @@ def format_bytes(bytes_val: float) -> str:
 
 
 def scan_deduped_folders(base_dir: str) -> List[str]:
-    """Scan .deduped folder for all duplicate set folders."""
-    deduped_path = os.path.join(base_dir, ".deduped")
+    """Scan __deduped folder for all duplicate set folders."""
+    deduped_path = os.path.join(base_dir, "__deduped")
     
     if not os.path.exists(deduped_path):
         return []
@@ -143,9 +143,9 @@ def restore_file(video_path: str, json_path: str, marker_path: Optional[str], me
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Restore videos marked as KEEP from .deduped folder to original locations'
+        description='Restore videos marked as KEEP from __deduped folder to original locations'
     )
-    parser.add_argument('directory', help='Base directory containing .deduped folder')
+    parser.add_argument('directory', help='Base directory containing __deduped folder')
     parser.add_argument('--report', type=str, default='dedup_restore_report.json',
                         help='Path to save restoration report')
     
@@ -161,7 +161,7 @@ def main():
     sets = scan_deduped_folders(base_dir)
     
     if not sets:
-        print(f"No .deduped folder found in {base_dir}")
+        print(f"No __deduped folder found in {base_dir}")
         print("Nothing to restore.")
         sys.exit(0)
     
@@ -173,7 +173,7 @@ def main():
                           for video, json_file, marker_file, metadata in files])
     
     if not all_files:
-        print("No files found in .deduped folder.")
+        print("No files found in __deduped folder.")
         print("Nothing to restore.")
         sys.exit(0)
     
@@ -249,18 +249,18 @@ def main():
         except Exception as e:
             print(f"  ✗ Could not remove folder: {os.path.basename(set_path)} - {e}")
     
-    # Remove .deduped folder if empty
-    deduped_path = os.path.join(base_dir, ".deduped")
+    # Remove __deduped folder if empty
+    deduped_path = os.path.join(base_dir, "__deduped")
     try:
         if os.path.exists(deduped_path):
             remaining = os.listdir(deduped_path)
             if not remaining:
                 os.rmdir(deduped_path)
-                print(f"  ✓ Removed empty .deduped folder")
+                print(f"  ✓ Removed empty __deduped folder")
             else:
-                print(f"  ℹ️  .deduped folder still contains {len(remaining)} items")
+                print(f"  ℹ️  __deduped folder still contains {len(remaining)} items")
     except Exception as e:
-        print(f"  ✗ Could not remove .deduped folder - {e}")
+        print(f"  ✗ Could not remove __deduped folder - {e}")
     
     # Calculate totals
     restored_size = sum(f["size_bytes"] for f in restored_files)
@@ -302,7 +302,7 @@ def main():
     else:
         print(f"\n✓ All files have been restored to their original locations.")
         if cleanup_complete:
-            print(f"✓ .deduped folder has been cleaned up.")
+            print(f"✓ __deduped folder has been cleaned up.")
 
 
 if __name__ == '__main__':

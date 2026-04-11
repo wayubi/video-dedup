@@ -21,7 +21,7 @@ The tool uses a two-tier approach:
 - ✅ Automatic fallback from audio to visual analysis
 - ✅ **Upscaling detection** - identifies fake 1080p/4K videos (720p upscaled)
 - ✅ **Flexible folder scanning** - scan root only, all subfolders, or specific subfolders
-- ✅ **Smart organization** - moves duplicates to hidden `.deduped/` folder
+- ✅ **Smart organization** - moves duplicates to hidden `__deduped/` folder
 - ✅ **Quality scoring** - automatically ranks duplicates by quality (resolution, bitrate, codec, HDR)
 - ✅ **Detailed metadata** - generates JSON metadata files with technical specs for each video
 - ✅ **Intelligent recommendations** - marks best quality as "KEEP", others as "DELETE_CANDIDATE"
@@ -87,7 +87,7 @@ After running, your directory will look like:
 
 ```
 videos/
-├── .deduped/                   # Hidden folder containing all duplicates
+├── __deduped/                   # Hidden folder containing all duplicates
 │   ├── duplicate_set_001/      # All copies of the same video
 │   │   ├── video_1080p.mp4
 │   │   └── video_720p_with_intro.mkv
@@ -192,7 +192,7 @@ docker-compose exec video-dedup python /app/scripts/find_video_duplicates.py /vi
 - **Absolute paths** (starting with `/`): Used exactly as specified
 - **Relative paths** (starting with `./`, `../`, or plain names): Resolved relative to the base directory
 - All scanned videos participate in duplicate detection together
-- All duplicates are organized into the base directory's `.deduped/` folder
+- All duplicates are organized into the base directory's `__deduped/` folder
 
 ### Examples
 
@@ -331,7 +331,7 @@ After detecting duplicates, each video file gets a companion `.json` metadata fi
 
 ### Metadata JSON Structure
 
-Each video in `.deduped/` gets a `{filename}.json` file:
+Each video in `__deduped/` gets a `{filename}.json` file:
 
 ```json
 {
@@ -394,16 +394,16 @@ docker-compose exec video-dedup python /app/scripts/dedup_restore.py /videos
 - Restores to `original_full_path` from metadata
 - Creates parent directories if missing
 - Handles filename collisions (adds `_restored_001` suffix)
-- Deletes from `.deduped/` after successful restore
-- Removes empty folders including `.deduped/` itself
+- Deletes from `__deduped/` after successful restore
+- Removes empty folders including `__deduped/` itself
 - Generates restoration report
 
 **Process:**
-1. Reads all `KEEP` files from `.deduped/`
+1. Reads all `KEEP` files from `__deduped/`
 2. Moves each file back to its original location
 3. Removes the `.json` metadata file
 4. Cleans up empty folders
-5. Removes `.deduped/` folder when empty
+5. Removes `__deduped/` folder when empty
 
 ### Workflow Example
 
@@ -413,8 +413,8 @@ Complete workflow from detection to cleanup:
 # 1. Detect duplicates
 docker-compose exec video-dedup python /app/scripts/find_video_duplicates.py /videos --include-subfolders
 
-# 2. Review .deduped/ folder and metadata JSON files
-ls -la /videos/.deduped/
+# 2. Review __deduped/ folder and metadata JSON files
+ls -la /videos/__deduped/
 
 # 3. Preview what would be deleted (optional)
 docker-compose exec video-dedup python /app/scripts/dedup_delete.py /videos
