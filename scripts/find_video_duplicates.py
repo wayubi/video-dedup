@@ -1181,7 +1181,7 @@ def analyze_duplicate_set(videos_with_metadata: List[Tuple[str, Dict]]) -> Dict[
     return results
 
 
-def organize_duplicates(directory: str, duplicate_groups: List[List[str]], dry_run: bool = False):
+def organize_duplicates(directory: str, duplicate_groups: List[List[str]], dry_run: bool = False, create_markers: bool = False):
     """Move duplicate videos into __deduped/numbered folders with metadata JSON files."""
     if not duplicate_groups:
         print("No duplicates found!")
@@ -1258,18 +1258,19 @@ def organize_duplicates(directory: str, duplicate_groups: List[List[str]], dry_r
                     with open(json_path, 'w') as f:
                         json.dump(json_data, f, indent=2)
                     
-                    # Create marker file (.keep or .delete)
-                    recommendation = analysis.get("recommendation", "")
-                    if recommendation == "KEEP":
-                        marker_filename = f"{os.path.basename(dest_path)}.keep"
-                        marker_path = os.path.join(folder_path, marker_filename)
-                        open(marker_path, 'w').close()
-                        print(f"  -> Created marker: {marker_filename}")
-                    elif recommendation == "DELETE_CANDIDATE":
-                        marker_filename = f"{os.path.basename(dest_path)}.delete"
-                        marker_path = os.path.join(folder_path, marker_filename)
-                        open(marker_path, 'w').close()
-                        print(f"  -> Created marker: {marker_filename}")
+                    # Create marker file (.keep or .delete) only if requested
+                    if create_markers:
+                        recommendation = analysis.get("recommendation", "")
+                        if recommendation == "KEEP":
+                            marker_filename = f"{os.path.basename(dest_path)}.keep"
+                            marker_path = os.path.join(folder_path, marker_filename)
+                            open(marker_path, 'w').close()
+                            print(f"  -> Created marker: {marker_filename}")
+                        elif recommendation == "DELETE_CANDIDATE":
+                            marker_filename = f"{os.path.basename(dest_path)}.delete"
+                            marker_path = os.path.join(folder_path, marker_filename)
+                            open(marker_path, 'w').close()
+                            print(f"  -> Created marker: {marker_filename}")
                     
                     # Move the video file
                     shutil.move(video_path, dest_path)
@@ -1291,6 +1292,8 @@ def main():
                         help='Path to save JSON report')
     parser.add_argument('--detect-upscaling', action='store_true',
                         help='Detect videos that are upscaled from lower resolutions (e.g., 720p encoded as 4K). Adds upscaling analysis to the report.')
+    parser.add_argument('--create-markers', action='store_true',
+                        help='Create marker files (.keep/.delete) for duplicate videos in __deduped folders')
     parser.add_argument('--include-subfolders', nargs='*', metavar='PATH',
                         help='Include subfolders in analysis. Without arguments: includes all subfolders (except __deduped). With arguments: includes only specified subfolder paths (relative to directory).')
     parser.add_argument('--exclude-root', action='store_true',
@@ -1440,7 +1443,7 @@ def main():
         print(f"\nReport saved to: {report_path}")
         
         # Organize duplicates
-        organize_duplicates(directory, duplicate_groups, args.dry_run)
+        organize_duplicates(directory, duplicate_groups, args.dry_run, args.create_markers)
         
     finally:
         # Cleanup temp directory
