@@ -11,9 +11,13 @@ import json
 import shutil
 import tempfile
 import argparse
+import hashlib
+import fcntl
+import time
 from pathlib import Path
 from collections import defaultdict
-from typing import List, Tuple, Optional, Dict, Set
+from typing import List, Tuple, Optional, Dict, Set, Any
+from concurrent.futures import ProcessPoolExecutor, as_completed
 import subprocess
 
 import numpy as np
@@ -22,6 +26,67 @@ import imagehash
 from tqdm import tqdm
 import audioread
 from scipy.ndimage import convolve
+
+VideoFeatures = Dict[str, Any]
+
+
+def compare_features(f1: VideoFeatures, f2: VideoFeatures) -> Tuple[bool, str]:
+    """Compare two videos using precomputed features with multi-stage filtering."""
+    dur1, dur2 = f1.get("duration", 0), f2.get("duration", 0)
+    
+    if dur1 <= 0 or dur2 <= 0:
+        return False, "no_duration"
+    
+    # STAGE 1: Duration (fastest)
+    duration_diff = abs(dur1 - dur2) / max(dur1, dur2, 1)
+    if duration_diff > LENGTH_TOLERANCE:
+        return False, "duration_mismatch"
+    
+    # STAGE 2: Resolution check
+    res1 = f1.get("resolution", (0, 0))
+    res2 = f2.get("resolution", (0, 0))
+    if res1 != res2 and res1 != (0, 0) and res2 != (0, 0):
+        return False, "resolution_mismatch"
+    
+    # STAGE 3: File size check
+    size1 = f1.get("file_size", 0)
+    size2 = f2.get("file_size", 0)
+    if size1 > 0 and size2 > 0:
+        size_diff = abs(size1 - size2) / max(size1, size2)
+        if size_diff > 0.5:
+            return False, "size_mismatch"
+    
+    # STAGE 4: Audio fingerprint (expensive)
+    if f1.get("has_audio") and f2.get("has_audio"):
+        fps1 = f1.get("audio_fingerprints", [])
+        fps2 = f2.get("audio_fingerprints", [])
+        
+        if fps1 and fps2:
+            matches = 0
+            for fp1_list in fps1:
+                fp1_arr = np.array(fp1_list)
+                best_sim = 0.0
+                for fp2_list in fps2:
+                    fp2_arr = np.array(fp2_list)
+                    sim = compare_audio_fingerprints(fp1_arr, fp2_arr)
+                    if sim > best_sim:
+                        best_sim = sim
+                if best_sim > 0.90:
+                    matches += 1
+            
+            if matches >= len(fps1):
+                return True, "audio_fingerprint"
+    
+    # STAGE 5: Visual hash (expensive)
+    hashes1 = f1.get("visual_hashes", [])
+    hashes2 = f2.get("visual_hashes", [])
+    
+    if hashes1 and hashes2:
+        visual_sim = compare_visual_fingerprints(hashes1, hashes2)
+        if visual_sim >= 0.5:
+            return True, "visual_fingerprint"
+    
+    return False, "no_match"
 
 # Supported video extensions
 VIDEO_EXTENSIONS = {'.mp4', '.mkv', '.avi', '.mov'}
@@ -52,6 +117,44 @@ def get_video_duration(video_path: str) -> float:
     except Exception as e:
         print(f"Warning: Could not get duration for {video_path}: {e}")
         return 0.0
+
+
+def get_video_metadata(video_path: str) -> Dict[str, Any]:
+    """Get all video metadata in a single ffprobe call."""
+    result = {
+        "duration": 0.0,
+        "resolution": (0, 0),
+        "has_audio": False,
+    }
+    
+    try:
+        cmd = [
+            'ffprobe', '-v', 'error',
+            '-show_entries', 'format=duration:stream=width,height,codec_type',
+            '-of', 'json',
+            video_path
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        data = json.loads(proc.stdout)
+        
+        # Parse duration
+        if "format" in data and "duration" in data["format"]:
+            result["duration"] = float(data["format"]["duration"])
+        
+        # Parse streams
+        if "streams" in data:
+            for stream in data["streams"]:
+                if stream.get("codec_type") == "video":
+                    w = stream.get("width", 0)
+                    h = stream.get("height", 0)
+                    result["resolution"] = (w, h)
+                elif stream.get("codec_type") == "audio":
+                    result["has_audio"] = True
+        
+    except Exception:
+        pass
+    
+    return result
 
 
 def extract_audio_sample(video_path: str, start_time: float, duration: float) -> Optional[np.ndarray]:
@@ -464,14 +567,11 @@ def find_duplicate_groups(videos: List[Tuple[str, float]]) -> List[List[str]]:
     if n == 0:
         return []
     
-    # Group by approximate duration for efficiency
     duration_groups = defaultdict(list)
     for video in videos:
-        # Round duration to nearest 30 seconds for grouping
         bucket = round(video[1] / 30) * 30
         duration_groups[bucket].append(video)
     
-    # Find matches
     matches = defaultdict(set)
     
     print(f"Analyzing {n} videos for duplicates...")
@@ -481,7 +581,6 @@ def find_duplicate_groups(videos: List[Tuple[str, float]]) -> List[List[str]]:
         if bucket_size < 2:
             continue
         
-        # Compare all pairs in bucket
         for i in tqdm(range(bucket_size), desc=f"Bucket {bucket}s"):
             for j in range(i + 1, bucket_size):
                 v1 = bucket_videos[i]
@@ -492,34 +591,99 @@ def find_duplicate_groups(videos: List[Tuple[str, float]]) -> List[List[str]]:
                     matches[v1[0]].add(v2[0])
                     matches[v2[0]].add(v1[0])
     
-    # Build connected components (transitive matches)
     visited = set()
     groups = []
-    
     for video in videos:
         video_path = video[0]
         if video_path in visited:
             continue
-        
-        # BFS to find all connected videos
         group = []
         queue = [video_path]
-        
         while queue:
             current = queue.pop(0)
             if current in visited:
                 continue
-            
             visited.add(current)
             group.append(current)
-            
             for neighbor in matches.get(current, []):
                 if neighbor not in visited:
                     queue.append(neighbor)
-        
         if len(group) > 1:
             groups.append(group)
+    return groups
+
+
+def find_duplicate_groups_with_features(features_list: List[VideoFeatures]) -> List[List[str]]:
+    """Find groups of duplicate videos using precomputed features with parallel comparisons."""
+    n = len(features_list)
+    if n == 0:
+        return []
     
+    duration_groups: Dict[int, List[VideoFeatures]] = defaultdict(list)
+    for f in features_list:
+        bucket = round(f.get("duration", 0) / 30) * 30
+        duration_groups[bucket].append(f)
+    
+    matches = defaultdict(set)
+    
+    print(f"Analyzing {n} videos for duplicates (parallel comparisons)...")
+    
+    # Generate all comparison pairs
+    all_pairs = []
+    for bucket, bucket_features in duration_groups.items():
+        bucket_size = len(bucket_features)
+        if bucket_size < 2:
+            continue
+        for i in range(bucket_size):
+            for j in range(i + 1, bucket_size):
+                all_pairs.append((bucket_features[i], bucket_features[j]))
+    
+    if not all_pairs:
+        return []
+    
+    # Parallel comparison with chunking for memory efficiency
+    n_workers = os.cpu_count() or 4
+    comparison_results = []
+    chunk_size = min(5000, len(all_pairs))
+    
+    with ProcessPoolExecutor(max_workers=n_workers) as executor:
+        for chunk_start in range(0, len(all_pairs), chunk_size):
+            chunk = all_pairs[chunk_start:chunk_start + chunk_size]
+            futures = {executor.submit(compare_features, f1, f2): (f1, f2) for f1, f2 in chunk}
+            for future in tqdm(as_completed(futures), total=len(chunk), desc=f"Comparing [{chunk_start}-{chunk_start+len(chunk)}]"):
+                try:
+                    f1, f2 = futures[future]
+                    is_dup, method = future.result()
+                    if is_dup:
+                        comparison_results.append((f1["path"], f2["path"]))
+                except Exception:
+                    pass
+    
+    # Build match graph
+    for p1, p2 in comparison_results:
+        matches[p1].add(p2)
+        matches[p2].add(p1)
+    
+    # Find connected components
+    visited = set()
+    groups = []
+    for f in features_list:
+        video_path = f["path"]
+        if video_path in visited:
+            continue
+        group = []
+        queue = [video_path]
+        while queue:
+            current = queue.pop(0)
+            if current in visited:
+                continue
+            visited.add(current)
+            group.append(current)
+            for neighbor in matches.get(current, []):
+                if neighbor not in visited:
+                    queue.append(neighbor)
+        if len(group) > 1:
+            groups.append(group)
     return groups
 
 
@@ -536,6 +700,222 @@ def get_video_resolution(video_path: str) -> Tuple[int, int]:
         return (width, height)
     except Exception as e:
         return (0, 0)
+
+
+def extract_visual_samples_batch(video_path: str, duration: float, temp_dir: str) -> List[Image.Image]:
+    """Extract multiple frames (sequential - more reliable than batch)."""
+    if temp_dir is None or duration <= 0:
+        return []
+    
+    sample_points = [0.2, 0.4, 0.6, 0.8][:NUM_VISUAL_SAMPLES]
+    images = []
+    base_name = os.path.basename(video_path)
+    
+    for i, point in enumerate(sample_points):
+        timestamp = duration * point
+        try:
+            temp_frame = os.path.join(temp_dir, f"frame_{base_name}_{i}.jpg")
+            cmd = [
+                'ffmpeg', '-y', '-ss', str(timestamp), '-i', video_path,
+                '-vframes', '1', '-q:v', '2', temp_frame
+            ]
+            subprocess.run(cmd, capture_output=True, timeout=15)
+            
+            if os.path.exists(temp_frame):
+                img = Image.open(temp_frame)
+                images.append(img)
+                os.remove(temp_frame)
+        except Exception:
+            pass
+    
+    return images
+
+
+CACHE_DIR = ".dedup_cache"
+CACHE_INDEX = os.path.join(CACHE_DIR, "index.json")
+CACHE_LOCK = os.path.join(CACHE_DIR, ".lock")
+
+
+def get_cache_key(video_path: str) -> str:
+    """Generate cache key from path + size + mtime."""
+    if not os.path.exists(video_path):
+        return ""
+    stat = os.stat(video_path)
+    key_str = f"{video_path}|{stat.st_size}|{stat.st_mtime}"
+    return hashlib.sha256(key_str.encode()).hexdigest()[:16]
+
+
+def load_cache_index() -> Dict[str, Dict]:
+    """Load cache index from disk."""
+    if os.path.exists(CACHE_INDEX):
+        try:
+            with open(CACHE_INDEX, 'r') as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError):
+            pass
+    return {}
+
+
+def save_cache_index(index: Dict[str, Dict]) -> None:
+    """Save cache index to disk with locking."""
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    max_retries = 5
+    for attempt in range(max_retries):
+        try:
+            with open(CACHE_LOCK, 'w') as lock_file:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+                try:
+                    with open(CACHE_INDEX, 'w') as f:
+                        json.dump(index, f, indent=2)
+                finally:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            return
+        except (IOError, OSError):
+            if attempt < max_retries - 1:
+                time.sleep(0.1 * (attempt + 1))
+            else:
+                pass
+
+
+def load_cached_features(video_path: str) -> Optional[VideoFeatures]:
+    """Load features from cache if valid, else None."""
+    cache_key = get_cache_key(video_path)
+    if not cache_key:
+        return None
+    
+    index = load_cache_index()
+    entry = index.get(cache_key)
+    
+    if entry is None:
+        return None
+    
+    if os.path.abspath(entry.get("path", "")) != os.path.abspath(video_path):
+        return None
+    
+    current_stat = os.stat(video_path)
+    if entry.get("size") != current_stat.st_size or entry.get("mtime") != current_stat.st_mtime:
+        return None
+    
+    features: VideoFeatures = {
+        "path": video_path,
+        "duration": entry.get("duration", 0.0),
+        "resolution": tuple(entry.get("resolution", [0, 0])),
+        "has_audio": entry.get("has_audio", False),
+        "audio_fingerprints": [],
+        "visual_hashes": entry.get("visual_hashes", []),
+        "file_size": entry.get("size", 0),
+        "mtime": entry.get("mtime", 0.0),
+    }
+    
+    audio_fp_list = entry.get("audio_fingerprints", [])
+    if audio_fp_list:
+        features["audio_fingerprints"] = audio_fp_list
+    
+    return features
+
+
+def save_features_to_cache(features: VideoFeatures) -> None:
+    """Save features to cache."""
+    video_path = features.get("path", "")
+    if not video_path:
+        return
+    
+    cache_key = get_cache_key(video_path)
+    if not cache_key:
+        return
+    
+    index = load_cache_index()
+    
+    stat = os.stat(video_path)
+    index[cache_key] = {
+        "path": os.path.abspath(video_path),
+        "size": stat.st_size,
+        "mtime": stat.st_mtime,
+        "duration": features.get("duration", 0.0),
+        "resolution": list(features.get("resolution", (0, 0))),
+        "has_audio": features.get("has_audio", False),
+        "visual_hashes": features.get("visual_hashes", []),
+        "audio_fingerprints": features.get("audio_fingerprints", []),
+    }
+    
+    save_cache_index(index)
+
+
+def extract_all_features(video_path: str, temp_dir: Optional[str] = None) -> VideoFeatures:
+    """
+    Extract all features from a video ONCE.
+    Returns a dict with: duration, resolution, has_audio, audio_fingerprints, visual_hashes.
+    
+    Args:
+        video_path: Path to the video file
+        temp_dir: Optional temp directory. If None, uses global TEMP_DIR (for backward compatibility)
+    """
+    cached = load_cached_features(video_path)
+    if cached and cached.get("duration", 0) > 0:
+        return cached
+    
+    effective_temp_dir = temp_dir if temp_dir is not None else TEMP_DIR
+    if effective_temp_dir is None:
+        effective_temp_dir = tempfile.mkdtemp(prefix="video_dedup_")
+    
+    if not os.path.exists(effective_temp_dir):
+        os.makedirs(effective_temp_dir, exist_ok=True)
+    
+    features: VideoFeatures = {
+        "path": video_path,
+        "duration": 0.0,
+        "resolution": (0, 0),
+        "has_audio": False,
+        "audio_fingerprints": [],
+        "visual_hashes": [],
+        "file_size": os.path.getsize(video_path) if os.path.exists(video_path) else 0,
+        "mtime": os.path.getmtime(video_path) if os.path.exists(video_path) else 0,
+    }
+    
+    if effective_temp_dir is None:
+        return features
+    
+    # Single ffprobe call for all metadata
+    metadata = get_video_metadata(video_path)
+    features["duration"] = metadata.get("duration", 0.0)
+    features["resolution"] = metadata.get("resolution", (0, 0))
+    features["has_audio"] = metadata.get("has_audio", False)
+    
+    if features["duration"] <= 0:
+        return features
+    
+    duration = features["duration"]
+    
+    if features["has_audio"]:
+        min_dur = duration
+        sample_starts = []
+        
+        if min_dur > SKIP_FIRST_SECONDS + AUDIO_SAMPLE_DURATION:
+            available = min_dur - SKIP_FIRST_SECONDS - AUDIO_SAMPLE_DURATION
+            for i in range(NUM_AUDIO_SAMPLES):
+                start = SKIP_FIRST_SECONDS + (available * i / max(NUM_AUDIO_SAMPLES - 1, 1))
+                sample_starts.append(start)
+        else:
+            mid = min_dur / 2
+            sample_starts = [max(0, mid - AUDIO_SAMPLE_DURATION/2)]
+        
+        for start in sample_starts:
+            audio_data = extract_audio_sample(video_path, start, AUDIO_SAMPLE_DURATION)
+            if audio_data is not None:
+                fp = generate_audio_fingerprint(audio_data)
+                if len(fp) > 0:
+                    features["audio_fingerprints"].append(fp.tolist())
+    
+    # Batch extract visual samples
+    images = extract_visual_samples_batch(video_path, duration, effective_temp_dir)
+    
+    if images:
+        features["visual_hashes"] = generate_visual_fingerprint(images)
+    
+    if features.get("duration", 0) > 0:
+        save_features_to_cache(features)
+    
+    return features
 
 
 def calculate_frequency_score(image: np.ndarray) -> float:
@@ -1343,6 +1723,9 @@ def main():
             print("No videos found!")
             sys.exit(0)
         
+        # Sort by file size for better disk access pattern (SSD-friendly batching)
+        video_paths = sorted(video_paths, key=lambda p: os.path.getsize(p) if os.path.exists(p) else 0)
+        
         print(f"Found {len(video_paths)} videos")
         
         # Optional: Detect upscaling
@@ -1377,24 +1760,33 @@ def main():
                         width, height = result["details"].get("resolution", (0, 0))
                         print(f"    - {os.path.basename(path)} ({width}x{height}) [confidence: {result['confidence']:.2f}]")
         
-        # Get durations
-        videos_with_duration = []
-        for path in tqdm(video_paths, desc="Getting durations"):
-            dur = get_video_duration(path)
-            if dur > 0:
-                videos_with_duration.append((path, dur))
+        # Extract all features for each video (parallel)
+        n_workers = os.cpu_count() or 4
+        print(f"Using {n_workers} workers for feature extraction")
         
-        if len(videos_with_duration) < 2:
+        features_list = []
+        
+        with ProcessPoolExecutor(max_workers=n_workers) as executor:
+            futures = {executor.submit(extract_all_features, path): path for path in video_paths}
+            for future in tqdm(as_completed(futures), total=len(futures), desc="Extracting features"):
+                try:
+                    features = future.result()
+                    if features.get("duration", 0) > 0:
+                        features_list.append(features)
+                except Exception as e:
+                    pass
+        
+        if len(features_list) < 2:
             print("Not enough valid videos to compare")
             sys.exit(0)
         
-        # Find duplicates
-        duplicate_groups = find_duplicate_groups(videos_with_duration)
+        # Find duplicates using precomputed features
+        duplicate_groups = find_duplicate_groups_with_features(features_list)
         
         # Save report
         report = {
             'directory': directory,
-            'total_videos': len(videos_with_duration),
+            'total_videos': len(features_list),
             'duplicate_sets': len(duplicate_groups),
             'sets': [
                 {
@@ -1403,7 +1795,7 @@ def main():
                         {
                             'path': v,
                             'filename': os.path.basename(v),
-                            'duration': next((d for p, d in videos_with_duration if p == v), 0)
+                            'duration': next((f.get("duration", 0) for f in features_list if f["path"] == v), 0)
                         }
                         for v in group
                     ]
