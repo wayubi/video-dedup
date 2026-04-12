@@ -42,18 +42,24 @@ def compare_features(f1: VideoFeatures, f2: VideoFeatures) -> Tuple[bool, str]:
     if duration_diff > LENGTH_TOLERANCE:
         return False, "duration_mismatch"
     
-    # STAGE 2: Resolution check
+    # STAGE 2: Resolution check (aspect ratio tolerance for different encodings)
     res1 = f1.get("resolution", (0, 0))
     res2 = f2.get("resolution", (0, 0))
-    if res1 != res2 and res1 != (0, 0) and res2 != (0, 0):
-        return False, "resolution_mismatch"
+    if res1 != (0, 0) and res2 != (0, 0):
+        # Calculate aspect ratios
+        ratio1 = res1[0] / res1[1] if res1[1] > 0 else 0
+        ratio2 = res2[0] / res2[1] if res2[1] > 0 else 0
+        # Allow 5% tolerance in aspect ratio (crops, slight differences)
+        if abs(ratio1 - ratio2) > 0.05:
+            return False, "resolution_mismatch"
     
-    # STAGE 3: File size check
+    # STAGE 3: File size check (more permissive - same content can have vastly different sizes)
     size1 = f1.get("file_size", 0)
     size2 = f2.get("file_size", 0)
     if size1 > 0 and size2 > 0:
         size_diff = abs(size1 - size2) / max(size1, size2)
-        if size_diff > 0.5:
+        # Allow up to 90% difference (same content can vary greatly by encoding/bitrate)
+        if size_diff > 0.9:
             return False, "size_mismatch"
     
     # STAGE 4: Audio fingerprint (expensive)
