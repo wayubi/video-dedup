@@ -148,6 +148,8 @@ def main():
     parser.add_argument('directory', help='Base directory containing __deduped folder')
     parser.add_argument('--report', type=str, default='dedup_restore_report.json',
                         help='Path to save restoration report')
+    parser.add_argument('--cleanup', action='store_true',
+                        help='Delete all remaining __deduped folders after restore, including non-dedup files')
     
     args = parser.parse_args()
     
@@ -172,9 +174,26 @@ def main():
         all_files.extend([(set_path, video, json_file, marker_file, metadata) 
                           for video, json_file, marker_file, metadata in files])
     
-    if not all_files:
+    # Check if there's anything to restore OR if we're in cleanup mode
+    if not all_files and not args.cleanup:
         print("No files found in __deduped folder.")
         print("Nothing to restore.")
+        # In cleanup mode, still proceed to clean up folders
+        sets = scan_deduped_folders(base_dir)
+        if sets:
+            print("\nCleaning up folders...")
+            for set_path in sets:
+                set_name = os.path.basename(set_path)
+                try:
+                    shutil.rmtree(set_path)
+                    print(f"  ✓ Removed: {set_name}")
+                except Exception as e:
+                    print(f"  ✗ Could not remove: {set_name} - {e}")
+            deduped_path = os.path.join(base_dir, "__deduped")
+            if os.path.exists(deduped_path):
+                shutil.rmtree(deduped_path)
+                print(f"  ✓ Removed __deduped folder")
+            print(f"\n✓ Cleanup complete.")
         sys.exit(0)
     
     # Calculate totals
@@ -237,34 +256,65 @@ def main():
             failed_files.append(file_info)
             print(f"  ✗ Failed: {video_name} - {error}")
     
-    # Clean up empty duplicate set folders
-    print("\nCleaning up empty folders...")
-    for set_path in sets:
-        try:
-            remaining_files = [f for f in os.listdir(set_path) 
-                             if os.path.isfile(os.path.join(set_path, f))]
-            if not remaining_files:
-                os.rmdir(set_path)
-                print(f"  ✓ Removed empty folder: {os.path.basename(set_path)}")
-        except Exception as e:
-            print(f"  ✗ Could not remove folder: {os.path.basename(set_path)} - {e}")
+    # Clean up duplicate set folders
+    print("\nCleaning up folders...")
+    skipped_folders = []
+    remaining_sets = []
     
-    # Remove __deduped folder if empty
+    if args.cleanup:
+        # Force delete everything that remains
+        for set_path in sets:
+            set_name = os.path.basename(set_path)
+            try:
+                shutil.rmtree(set_path)
+                print(f"  ✓ Removed: {set_name}")
+            except Exception as e:
+                print(f"  ✗ Could not remove: {set_name} - {e}")
+    else:
+        # Original behavior: delete empty folders, warn if has junk
+        for set_path in sets:
+            try:
+                remaining_files = [f for f in os.listdir(set_path) 
+                                if os.path.isfile(os.path.join(set_path, f))]
+                if not remaining_files:
+                    os.rmdir(set_path)
+                    print(f"  ✓ Removed empty: {os.path.basename(set_path)}")
+                else:
+                    print(f"  ⚠ Skipped (has {len(remaining_files)} files): {os.path.basename(set_path)}")
+                    skipped_folders.append({
+                        "folder": os.path.basename(set_path),
+                        "remaining_files": remaining_files
+                    })
+                    remaining_sets.append(set_path)
+            except Exception as e:
+                print(f"  ✗ Could not remove: {os.path.basename(set_path)} - {e}")
+    
+    # Remove __deduped folder
     deduped_path = os.path.join(base_dir, "__deduped")
-    try:
-        if os.path.exists(deduped_path):
-            remaining = os.listdir(deduped_path)
-            if not remaining:
-                os.rmdir(deduped_path)
-                print(f"  ✓ Removed empty __deduped folder")
-            else:
-                print(f"  ℹ️  __deduped folder still contains {len(remaining)} items")
-    except Exception as e:
-        print(f"  ✗ Could not remove __deduped folder - {e}")
+    if args.cleanup:
+        try:
+            if os.path.exists(deduped_path):
+                shutil.rmtree(deduped_path)
+                print(f"  ✓ Removed __deduped folder")
+        except Exception as e:
+            print(f"  ✗ Could not remove __deduped folder - {e}")
+    else:
+        try:
+            if os.path.exists(deduped_path):
+                remaining = os.listdir(deduped_path)
+                if not remaining:
+                    os.rmdir(deduped_path)
+                    print(f"  ✓ Removed empty __deduped folder")
+                else:
+                    print(f"  ℹ️  __deduped folder left ({len(remaining)} items)")
+                    remaining_sets.append(deduped_path)
+        except Exception as e:
+            print(f"  ✗ Could not remove __deduped folder - {e}")
     
     # Calculate totals
     restored_size = sum(f["size_bytes"] for f in restored_files)
-    cleanup_complete = len(failed_files) == 0 and len(restored_files) == len(all_files)
+    restore_complete = len(failed_files) == 0 and len(restored_files) == len(all_files)
+    cleanup_complete = len(failed_files) == 0 and len(restored_files) == len(all_files) and len(skipped_folders) == 0
     
     # Generate report
     report = {
@@ -277,10 +327,13 @@ def main():
             "files_failed": len(failed_files),
             "space_restored_bytes": restored_size,
             "space_restored_human": format_bytes(restored_size),
-            "cleanup_complete": cleanup_complete
+            "restore_complete": restore_complete,
+            "cleanup_complete": cleanup_complete,
+            "cleanup_mode": args.cleanup
         },
         "restored_files": restored_files,
-        "failed_files": failed_files
+        "failed_files": failed_files,
+        "skipped_folders": skipped_folders
     }
     
     report_path = os.path.join(base_dir, args.report)
@@ -303,6 +356,8 @@ def main():
         print(f"\n✓ All files have been restored to their original locations.")
         if cleanup_complete:
             print(f"✓ __deduped folder has been cleaned up.")
+        elif skipped_folders:
+            print(f"\nℹ️  Run with --cleanup to remove folders with extra files: {len(skipped_folders)} folders")
 
 
 if __name__ == '__main__':
