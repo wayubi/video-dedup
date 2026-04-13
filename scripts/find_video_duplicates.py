@@ -1682,7 +1682,9 @@ def main():
     parser.add_argument('--create-markers', action='store_true',
                         help='Create marker files (.keep/.delete) for duplicate videos in __deduped folders')
     parser.add_argument('--include-subfolders', nargs='*', metavar='PATH',
-                        help='Include subfolders in analysis. Without arguments: includes all subfolders (except __deduped). With arguments: includes only specified subfolder paths (relative to directory).')
+                        help='Include subfolders in analysis. Without arguments: includes all subfolders (default). With arguments: includes only specified subfolder paths (relative to directory).')
+    parser.add_argument('--no-subfolders', action='store_true',
+                        help='Only scan the root directory (default is to include all subfolders)')
     parser.add_argument('--exclude-root', action='store_true',
                         help='Exclude videos from the root directory. Only useful with --include-subfolders.')
     
@@ -1694,11 +1696,6 @@ def main():
         print(f"Error: {directory} is not a valid directory")
         sys.exit(1)
     
-    # Validate argument combinations
-    if args.exclude_root and args.include_subfolders is None:
-        print("Error: --exclude-root requires --include-subfolders to be specified")
-        sys.exit(1)
-    
     # Create temp directory
     TEMP_DIR = tempfile.mkdtemp(prefix="video_dedup_")
     
@@ -1706,19 +1703,25 @@ def main():
     
     try:
         # Determine scanning parameters
-        include_subfolders = args.include_subfolders
+        # Default: include all subfolders, unless --no-subfolders is set
+        if args.no_subfolders:
+            include_subfolders = None  # Root only
+        elif args.include_subfolders is not None:
+            include_subfolders = args.include_subfolders  # Use specified value
+        else:
+            include_subfolders = []  # All subfolders (new default)
+        
         exclude_root = args.exclude_root
         
         # Print scanning info
-        if include_subfolders is not None:
-            if len(include_subfolders) == 0:
-                print(f"Scanning {directory} and all subfolders...")
-            else:
-                print(f"Scanning {directory} with specific subfolders:")
-                for path in include_subfolders:
-                    print(f"  - {path}")
-        else:
+        if include_subfolders is None:
             print(f"Scanning {directory} (root directory only)...")
+        elif len(include_subfolders) == 0:
+            print(f"Scanning {directory} and all subfolders...")
+        else:
+            print(f"Scanning {directory} with specific subfolders:")
+            for path in include_subfolders:
+                print(f"  - {path}")
         
         if exclude_root:
             print("  (excluding root directory)")
