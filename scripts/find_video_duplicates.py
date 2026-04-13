@@ -115,16 +115,35 @@ def compare_features(f1: VideoFeatures, f2: VideoFeatures, verbose: bool = False
                 return True, "audio_fingerprint"
         else:
             if verbose:
+                has_audio1 = f1.get("has_audio", False)
+                has_audio2 = f2.get("has_audio", False)
+                fps1 = f1.get("audio_fingerprints", [])
+                fps2 = f2.get("audio_fingerprints", [])
                 has_fps1 = "YES" if fps1 else "NO"
                 has_fps2 = "YES" if fps2 else "NO"
-                print(f"    Stage 4 (Audio): fps1={has_fps1}, fps2={has_fps2}, result=SKIP (no fingerprints)")
+                print(f"    Stage 4 (Audio): has_audio={has_audio1}/{has_audio2}, fps={has_fps1}/{has_fps2}, result=SKIP")
     
     # STAGE 5: Visual hash (expensive)
     hashes1 = f1.get("visual_hashes", [])
     hashes2 = f2.get("visual_hashes", [])
     visual_pass = False
+    if verbose:
+        # Debug: show visual hash details
+        h1_count = len(hashes1) if hashes1 else 0
+        h2_count = len(hashes2) if hashes2 else 0
+        h1_regions = len(hashes1[0]) if hashes1 and hashes1[0] else 0
+        h2_regions = len(hashes2[0]) if hashes2 and hashes2[0] else 0
+        print(f"    Stage 5 (Visual): frames1={h1_count}, frames2={h2_count}, regions_per_frame={h1_regions}")
+    
     if hashes1 and hashes2:
-        visual_sim = compare_visual_fingerprints(hashes1, hashes2)
+        try:
+            visual_sim = compare_visual_fingerprints(hashes1, hashes2, verbose)
+        except Exception as e:
+            if verbose:
+                print(f"    Stage 5 (Visual): ERROR in comparison: {e}")
+                print(f"      hashes1: {len(hashes1)} frames, first={hashes1[0] if hashes1 else 'empty'}")
+                print(f"      hashes2: {len(hashes2)} frames, first={hashes2[0] if hashes2 else 'empty'}")
+            visual_sim = 0.0
         visual_pass = visual_sim >= 0.7
         if verbose:
             print(f"    Stage 5 (Visual): similarity={visual_sim:.4f}, threshold=0.7, result={'PASS' if visual_pass else 'FAIL'}")
@@ -145,7 +164,7 @@ VIDEO_EXTENSIONS = {'.mp4', '.mkv', '.avi', '.mov', '.webm'}
 LENGTH_TOLERANCE = 0.15  # 15% length difference allowed
 AUDIO_SAMPLE_DURATION = 5  # seconds per audio sample
 NUM_AUDIO_SAMPLES = 4  # number of samples to extract
-NUM_VISUAL_SAMPLES = 4  # number of frames to extract
+NUM_VISUAL_SAMPLES = 7  # number of frames to extract
 SKIP_FIRST_SECONDS = 10  # skip first 10 seconds to avoid intros/ads
 TEMP_DIR = None
 
@@ -411,13 +430,11 @@ def compare_audio_fingerprints(fp1: np.ndarray, fp2: np.ndarray) -> float:
     return max(0.0, similarity)
 
 
-def compare_visual_fingerprints(hashes1: List[List[str]], hashes2: List[List[str]]) -> float:
-    """
-    Compare region-based visual fingerprints and return similarity (0-1).
-    
-    Each frame has 3 regions (top/middle/bottom). A frame match requires 2 of 3
-    regions to have hamming distance <= threshold_match.
-    """
+def compare_visual_fingerprints(hashes1: List[List[str]], hashes2: List[List[str]], verbose: bool = False) -> float:
+    """Improved version - tolerant to small timing shifts and re-encoding."""
+    if verbose:
+        print(f"    DEBUG: compare_visual_fingerprints called with {len(hashes1)} vs {len(hashes2)} frame hashes")
+
     if not hashes1 or not hashes2:
         return 0.0
 
@@ -425,30 +442,36 @@ def compare_visual_fingerprints(hashes1: List[List[str]], hashes2: List[List[str
     if n == 0:
         return 0.0
 
-    threshold_match = 5
-    threshold_fail = 15
-
-    matches = 0
+    threshold_match = 9
+    threshold_bad = 26
+    good_frames = 0
 
     for i in range(n):
         regions1 = hashes1[i]
         regions2 = hashes2[i]
-
         region_matches = 0
+        dists = [hamming_distance(r1, r2) for r1, r2 in zip(regions1, regions2)]
+        max_dist = max(dists)
 
-        for r1, r2 in zip(regions1, regions2):
-            dist = hamming_distance(r1, r2)
-
-            if dist >= threshold_fail:
-                return 0.0
-
+        for dist in dists:
             if dist <= threshold_match:
                 region_matches += 1
 
-        if region_matches >= 2:
-            matches += 1
+        is_good = (region_matches >= 2) and (max_dist <= threshold_bad)
 
-    return matches / n
+        if verbose:
+            status = "GOOD" if is_good else "BAD"
+            print(f"      Frame {i}: top:{dists[0]} mid:{dists[1]} bot:{dists[2]} → {status} ({region_matches}/3)")
+
+        if is_good:
+            good_frames += 1
+
+    similarity = good_frames / n
+
+    if verbose:
+        print(f"    Final visual similarity: {similarity:.4f} ({good_frames}/{n} good frames)")
+
+    return similarity
 
 
 def find_videos(
@@ -628,7 +651,7 @@ def is_same_video(video1: Tuple[str, float], video2: Tuple[str, float]) -> Tuple
         hashes1 = generate_visual_fingerprint(images1)
         hashes2 = generate_visual_fingerprint(images2)
         
-        visual_sim = compare_visual_fingerprints(hashes1, hashes2)
+        visual_sim = compare_visual_fingerprints(hashes1, hashes2, False)
         if visual_sim >= 0.7:  # At least half the frames match
             return True, "visual_fingerprint"
     
@@ -812,18 +835,21 @@ def get_video_resolution(video_path: str) -> Tuple[int, int]:
 
 
 def extract_visual_samples_batch(video_path: str, duration: float, temp_dir: str) -> List[Image.Image]:
-    """Extract multiple frames (sequential - more reliable than batch)."""
+    """Extract multiple frames - improved sampling for small timing differences."""
     if temp_dir is None or duration <= 0:
         return []
     
-    sample_points = [0.2, 0.4, 0.6, 0.8][:NUM_VISUAL_SAMPLES]
+    # Better distributed points - more dense in the middle
+    sample_points = [0.18, 0.28, 0.38, 0.50, 0.62, 0.72, 0.82]
+    
     images = []
     base_name = os.path.basename(video_path)
     
     for i, point in enumerate(sample_points):
         timestamp = duration * point
         try:
-            temp_frame = os.path.join(temp_dir, f"frame_{base_name}_{i}.jpg")
+            temp_frame = os.path.join(temp_dir, f"frame_{base_name}_{i:02d}.jpg")
+            
             cmd = [
                 'ffmpeg', '-y', '-ss', str(timestamp), '-i', video_path,
                 '-vframes', '1', '-q:v', '2', temp_frame
