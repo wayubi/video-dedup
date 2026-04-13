@@ -39,6 +39,15 @@ def compare_features(f1: VideoFeatures, f2: VideoFeatures, verbose: bool = False
     if dur1 <= 0 or dur2 <= 0:
         return False, "no_duration"
     
+    # STAGE 0: Quick file hash (instant - identical files)
+    hash1 = f1.get("file_hash", "")
+    hash2 = f2.get("file_hash", "")
+    if hash1 and hash2 and hash1 == hash2:
+        if verbose:
+            print(f"  {v1_name} vs {v2_name}")
+            print(f"    Stage 0 (File Hash): MATCH (identical files)")
+        return True, "file_hash"
+    
     # STAGE 1: Duration (fastest)
     duration_diff = abs(dur1 - dur2) / max(dur1, dur2, 1)
     if verbose:
@@ -845,6 +854,31 @@ def get_cache_key(video_path: str) -> str:
     return hashlib.sha256(key_str.encode()).hexdigest()[:16]
 
 
+def compute_file_hash(video_path: str) -> str:
+    """Compute xxHash (murmur64) of entire file for quick duplicate detection."""
+    try:
+        import xxhash
+        h = xxhash.xxh64()
+        with open(video_path, 'rb') as f:
+            for chunk in iter(lambda: f.read(65536), b''):
+                h.update(chunk)
+        return h.hexdigest()
+    except ImportError:
+        md5 = hashlib.md5()
+        with open(video_path, 'rb') as f:
+            for chunk in iter(lambda: f.read(65536), b''):
+                md5.update(chunk)
+        return md5.hexdigest()
+
+
+# Check and log which hash method is available
+try:
+    import xxhash
+    HASH_METHOD = "xxhash"
+except ImportError:
+    HASH_METHOD = "MD5"
+
+
 def load_cache_index() -> Dict[str, Dict]:
     """Load cache index from disk."""
     if os.path.exists(CACHE_INDEX):
@@ -934,6 +968,7 @@ def save_features_to_cache(features: VideoFeatures) -> None:
         "duration": features.get("duration", 0.0),
         "resolution": list(features.get("resolution", (0, 0))),
         "has_audio": features.get("has_audio", False),
+        "file_hash": features.get("file_hash", ""),
         "visual_hashes": features.get("visual_hashes", []),
         "audio_fingerprints": features.get("audio_fingerprints", []),
     }
@@ -980,6 +1015,9 @@ def extract_all_features(video_path: str, temp_dir: Optional[str] = None) -> Vid
     features["duration"] = metadata.get("duration", 0.0)
     features["resolution"] = metadata.get("resolution", (0, 0))
     features["has_audio"] = metadata.get("has_audio", False)
+    
+    # Compute file hash for quick duplicate detection
+    features["file_hash"] = compute_file_hash(video_path)
     
     if features["duration"] <= 0:
         return features
@@ -1604,8 +1642,14 @@ def analyze_duplicate_set(videos_with_metadata: List[Tuple[str, Dict]]) -> Dict[
         results[video_path]["reason"] = "Only copy of this content"
         return results
     
-    # Find best video based on quality score, tie-break by width and bitrate
-    best_path = max(results.keys(), key=lambda p: (results[p]["quality_score"], results[p]["metadata"].get("video", {}).get("width", 0), results[p]["metadata"].get("video", {}).get("video_bitrate_kbps", 0)))
+    # Find best video based on quality score, tie-break by modification time, width and bitrate
+    # Prefer older files (lower modification_time) when scores are within 1 point
+    best_path = max(results.keys(), key=lambda p: (
+        results[p]["quality_score"],
+        -results[p]["metadata"].get("file_info", {}).get("modification_time", 0),
+        results[p]["metadata"].get("video", {}).get("width", 0),
+        results[p]["metadata"].get("video", {}).get("video_bitrate_kbps", 0)
+    ))
     best_score = results[best_path]["quality_score"]
     best_metadata = results[best_path]["metadata"]
     
@@ -1823,6 +1867,8 @@ def main():
         
         if exclude_root:
             print("  (excluding root directory)")
+        
+        print(f"Using {HASH_METHOD} for file hashing")
         
         include_hidden = args.include_hidden
         

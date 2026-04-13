@@ -20,4 +20,5 @@ RUN pip install --no-cache-dir \
     tqdm \
     pyacoustid \
     audioread \
-    scikit-image
+    scikit-image \
+    xxhash
