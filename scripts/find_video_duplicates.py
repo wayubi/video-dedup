@@ -705,7 +705,7 @@ def find_duplicate_groups_with_features(features_list: List[VideoFeatures], verb
     
     # Debug: Show comparison pairs for specific videos
     if verbose:
-        target_names = ["Southern Bell", "132330"]
+        target_names = ["Hello", "World"]
         print(f"\n[DEBUG] Generated {len(all_pairs)} comparison pairs")
         print(f"[DEBUG] Looking for pairs involving: {target_names}")
         for f1, f2 in all_pairs:
