@@ -116,9 +116,9 @@ def compare_features(f1: VideoFeatures, f2: VideoFeatures, verbose: bool = False
     visual_pass = False
     if hashes1 and hashes2:
         visual_sim = compare_visual_fingerprints(hashes1, hashes2)
-        visual_pass = visual_sim >= 0.5
+        visual_pass = visual_sim >= 0.7
         if verbose:
-            print(f"    Stage 5 (Visual): similarity={visual_sim:.4f}, threshold=0.5, result={'PASS' if visual_pass else 'FAIL'}")
+            print(f"    Stage 5 (Visual): similarity={visual_sim:.4f}, threshold=0.7, result={'PASS' if visual_pass else 'FAIL'}")
         if visual_pass:
             return True, "visual_fingerprint"
     else:
@@ -339,18 +339,22 @@ def extract_visual_samples(video_path: str, duration: float) -> List[Image.Image
     return images
 
 
-def generate_visual_fingerprint(images: List[Image.Image]) -> List[str]:
-    """Generate perceptual hashes for images."""
+def generate_visual_fingerprint(images: List[Image.Image]) -> List[List[str]]:
+    """Generate region-based perceptual hashes per frame (top/middle/bottom)."""
     hashes = []
     for img in images:
         try:
-            # Convert to RGB if necessary
             if img.mode != 'RGB':
                 img = img.convert('RGB')
-            # Use pHash (perceptual hash)
-            hash_val = str(imagehash.phash(img))
-            hashes.append(hash_val)
-        except Exception as e:
+            w, h = img.size
+            regions = [
+                img.crop((0, 0, w, h // 3)),           # top
+                img.crop((0, h // 3, w, 2 * h // 3)),  # middle
+                img.crop((0, 2 * h // 3, w, h))        # bottom
+            ]
+            region_hashes = [str(imagehash.phash(r)) for r in regions]
+            hashes.append(region_hashes)
+        except Exception:
             pass
     return hashes
 
@@ -398,34 +402,44 @@ def compare_audio_fingerprints(fp1: np.ndarray, fp2: np.ndarray) -> float:
     return max(0.0, similarity)
 
 
-def compare_visual_fingerprints(hashes1: List[str], hashes2: List[str]) -> float:
-    """Compare visual fingerprints and return similarity (0-1)."""
+def compare_visual_fingerprints(hashes1: List[List[str]], hashes2: List[List[str]]) -> float:
+    """
+    Compare region-based visual fingerprints and return similarity (0-1).
+    
+    Each frame has 3 regions (top/middle/bottom). A frame match requires 2 of 3
+    regions to have hamming distance <= threshold_match.
+    """
     if not hashes1 or not hashes2:
         return 0.0
-    
-    # Compare all pairs and find best matches
+
+    n = min(len(hashes1), len(hashes2))
+    if n == 0:
+        return 0.0
+
+    threshold_match = 5
+    threshold_fail = 15
+
     matches = 0
-    threshold = 10  # Hamming distance threshold for match
-    
-    used = set()
-    for h1 in hashes1:
-        best_match = None
-        best_dist = float('inf')
-        
-        for i, h2 in enumerate(hashes2):
-            if i in used:
-                continue
-            dist = hamming_distance(h1, h2)
-            if dist < best_dist:
-                best_dist = dist
-                best_match = i
-        
-        if best_match is not None and best_dist <= threshold:
+
+    for i in range(n):
+        regions1 = hashes1[i]
+        regions2 = hashes2[i]
+
+        region_matches = 0
+
+        for r1, r2 in zip(regions1, regions2):
+            dist = hamming_distance(r1, r2)
+
+            if dist >= threshold_fail:
+                return 0.0
+
+            if dist <= threshold_match:
+                region_matches += 1
+
+        if region_matches >= 2:
             matches += 1
-            used.add(best_match)
-    
-    # Return proportion of matches
-    return matches / max(len(hashes1), len(hashes2))
+
+    return matches / n
 
 
 def find_videos(
@@ -606,7 +620,7 @@ def is_same_video(video1: Tuple[str, float], video2: Tuple[str, float]) -> Tuple
         hashes2 = generate_visual_fingerprint(images2)
         
         visual_sim = compare_visual_fingerprints(hashes1, hashes2)
-        if visual_sim >= 0.5:  # At least half the frames match
+        if visual_sim >= 0.7:  # At least half the frames match
             return True, "visual_fingerprint"
     
     return False, "no_match"
