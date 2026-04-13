@@ -665,19 +665,54 @@ def find_duplicate_groups_with_features(features_list: List[VideoFeatures], verb
         bucket = round(f.get("duration", 0) / 30) * 30
         duration_groups[bucket].append(f)
     
+    # Debug: Show bucket distribution
+    if verbose:
+        print(f"\n[DEBUG] Bucket distribution ({len(duration_groups)} buckets):")
+        for bucket in sorted(duration_groups.keys()):
+            videos = [os.path.basename(f["path"]) for f in duration_groups[bucket]]
+            print(f"  Bucket {bucket}s: {len(videos)} videos - {videos[:3]}{'...' if len(videos) > 3 else ''}")
+    
     matches = defaultdict(set)
     
     print(f"Analyzing {n} videos for duplicates (parallel comparisons)...")
     
-    # Generate all comparison pairs
+    # Generate all comparison pairs (within bucket + adjacent buckets for edge cases)
     all_pairs = []
-    for bucket, bucket_features in duration_groups.items():
+    all_buckets = sorted(duration_groups.keys())
+    added_pairs = set()  # Track added pairs to avoid duplicates
+    
+    for i, bucket in enumerate(all_buckets):
+        bucket_features = duration_groups[bucket]
         bucket_size = len(bucket_features)
-        if bucket_size < 2:
-            continue
-        for i in range(bucket_size):
-            for j in range(i + 1, bucket_size):
-                all_pairs.append((bucket_features[i], bucket_features[j]))
+        
+        # Within bucket pairs (only if 2+ videos)
+        if bucket_size >= 2:
+            for j in range(bucket_size):
+                for k in range(j + 1, bucket_size):
+                    all_pairs.append((bucket_features[j], bucket_features[k]))
+        
+        # Compare with adjacent bucket (+30s only) - ALWAYS, regardless of bucket_size
+        adj_bucket = bucket + 30
+        if adj_bucket in duration_groups:
+            adj_features = duration_groups[adj_bucket]
+            for f1 in bucket_features:
+                for f2 in adj_features:
+                    # Create a unique key for this pair (sorted paths)
+                    pair_key = tuple(sorted([f1["path"], f2["path"]]))
+                    if pair_key not in added_pairs:
+                        added_pairs.add(pair_key)
+                        all_pairs.append((f1, f2))
+    
+    # Debug: Show comparison pairs for specific videos
+    if verbose:
+        target_names = ["Southern Bell", "132330"]
+        print(f"\n[DEBUG] Generated {len(all_pairs)} comparison pairs")
+        print(f"[DEBUG] Looking for pairs involving: {target_names}")
+        for f1, f2 in all_pairs:
+            name1 = os.path.basename(f1["path"])
+            name2 = os.path.basename(f2["path"])
+            if any(t.lower() in name1.lower() for t in target_names) or any(t.lower() in name2.lower() for t in target_names):
+                print(f"  PAIR: {name1[:50]} vs {name2[:50]}")
     
     if not all_pairs:
         return []
