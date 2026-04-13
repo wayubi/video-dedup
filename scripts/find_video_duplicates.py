@@ -30,45 +30,61 @@ from scipy.ndimage import convolve
 VideoFeatures = Dict[str, Any]
 
 
-def compare_features(f1: VideoFeatures, f2: VideoFeatures) -> Tuple[bool, str]:
+def compare_features(f1: VideoFeatures, f2: VideoFeatures, verbose: bool = False) -> Tuple[bool, str]:
     """Compare two videos using precomputed features with multi-stage filtering."""
     dur1, dur2 = f1.get("duration", 0), f2.get("duration", 0)
+    v1_name = os.path.basename(f1.get("path", ""))
+    v2_name = os.path.basename(f2.get("path", ""))
     
     if dur1 <= 0 or dur2 <= 0:
         return False, "no_duration"
     
     # STAGE 1: Duration (fastest)
     duration_diff = abs(dur1 - dur2) / max(dur1, dur2, 1)
+    if verbose:
+        print(f"  {v1_name} vs {v2_name}")
+        print(f"    Stage 1 (Duration): diff={duration_diff:.4f}, threshold={LENGTH_TOLERANCE}, result={'PASS' if duration_diff <= LENGTH_TOLERANCE else 'FAIL'}")
     if duration_diff > LENGTH_TOLERANCE:
         return False, "duration_mismatch"
     
     # STAGE 2: Resolution check (aspect ratio tolerance for different encodings)
     res1 = f1.get("resolution", (0, 0))
     res2 = f2.get("resolution", (0, 0))
+    stage2_pass = True
     if res1 != (0, 0) and res2 != (0, 0):
-        # Calculate aspect ratios
         ratio1 = res1[0] / res1[1] if res1[1] > 0 else 0
         ratio2 = res2[0] / res2[1] if res2[1] > 0 else 0
-        # Allow 5% tolerance in aspect ratio (crops, slight differences)
-        if abs(ratio1 - ratio2) > 0.05:
+        ratio_diff = abs(ratio1 - ratio2)
+        stage2_pass = ratio_diff <= 0.15
+        if verbose:
+            print(f"    Stage 2 (Resolution): ratio1={ratio1:.3f}, ratio2={ratio2:.3f}, diff={ratio_diff:.4f}, threshold=0.15, result={'PASS' if stage2_pass else 'FAIL'}")
+        if not stage2_pass:
             return False, "resolution_mismatch"
     
     # STAGE 3: File size check (more permissive - same content can have vastly different sizes)
     size1 = f1.get("file_size", 0)
     size2 = f2.get("file_size", 0)
+    stage3_pass = True
     if size1 > 0 and size2 > 0:
         size_diff = abs(size1 - size2) / max(size1, size2)
-        # Allow up to 90% difference (same content can vary greatly by encoding/bitrate)
-        if size_diff > 0.9:
+        stage3_pass = size_diff <= 0.9
+        if verbose:
+            print(f"    Stage 3 (Size): size1={size1}, size2={size2}, diff={size_diff:.4f}, threshold=0.9, result={'PASS' if stage3_pass else 'FAIL'}")
+        if not stage3_pass:
             return False, "size_mismatch"
     
     # STAGE 4: Audio fingerprint (expensive)
-    if f1.get("has_audio") and f2.get("has_audio"):
+    has_audio1 = f1.get("has_audio", False)
+    has_audio2 = f2.get("has_audio", False)
+    audio_pass = False
+    audio_details = ""
+    if has_audio1 and has_audio2:
         fps1 = f1.get("audio_fingerprints", [])
         fps2 = f2.get("audio_fingerprints", [])
         
         if fps1 and fps2:
             matches = 0
+            match_details = []
             for fp1_list in fps1:
                 fp1_arr = np.array(fp1_list)
                 best_sim = 0.0
@@ -79,18 +95,37 @@ def compare_features(f1: VideoFeatures, f2: VideoFeatures) -> Tuple[bool, str]:
                         best_sim = sim
                 if best_sim > 0.90:
                     matches += 1
+                match_details.append(f"{best_sim:.2f}")
             
-            if matches >= len(fps1):
+            audio_pass = matches >= len(fps1)
+            audio_details = f"matches={matches}/{len(fps1)} (thresholds: {', '.join(match_details)})"
+            if verbose:
+                print(f"    Stage 4 (Audio): {audio_details}, result={'PASS' if audio_pass else 'FAIL'}")
+            
+            if audio_pass:
                 return True, "audio_fingerprint"
+        else:
+            if verbose:
+                has_fps1 = "YES" if fps1 else "NO"
+                has_fps2 = "YES" if fps2 else "NO"
+                print(f"    Stage 4 (Audio): fps1={has_fps1}, fps2={has_fps2}, result=SKIP (no fingerprints)")
     
     # STAGE 5: Visual hash (expensive)
     hashes1 = f1.get("visual_hashes", [])
     hashes2 = f2.get("visual_hashes", [])
-    
+    visual_pass = False
     if hashes1 and hashes2:
         visual_sim = compare_visual_fingerprints(hashes1, hashes2)
-        if visual_sim >= 0.5:
+        visual_pass = visual_sim >= 0.5
+        if verbose:
+            print(f"    Stage 5 (Visual): similarity={visual_sim:.4f}, threshold=0.5, result={'PASS' if visual_pass else 'FAIL'}")
+        if visual_pass:
             return True, "visual_fingerprint"
+    else:
+        if verbose:
+            has_h1 = "YES" if hashes1 else "NO"
+            has_h2 = "YES" if hashes2 else "NO"
+            print(f"    Stage 5 (Visual): hashes1={has_h1}, hashes2={has_h2}, result=SKIP (no hashes)")
     
     return False, "no_match"
 
@@ -619,7 +654,7 @@ def find_duplicate_groups(videos: List[Tuple[str, float]]) -> List[List[str]]:
     return groups
 
 
-def find_duplicate_groups_with_features(features_list: List[VideoFeatures]) -> List[List[str]]:
+def find_duplicate_groups_with_features(features_list: List[VideoFeatures], verbose: bool = False) -> List[List[str]]:
     """Find groups of duplicate videos using precomputed features with parallel comparisons."""
     n = len(features_list)
     if n == 0:
@@ -655,7 +690,7 @@ def find_duplicate_groups_with_features(features_list: List[VideoFeatures]) -> L
     with ProcessPoolExecutor(max_workers=n_workers) as executor:
         for chunk_start in range(0, len(all_pairs), chunk_size):
             chunk = all_pairs[chunk_start:chunk_start + chunk_size]
-            futures = {executor.submit(compare_features, f1, f2): (f1, f2) for f1, f2 in chunk}
+            futures = {executor.submit(compare_features, f1, f2, verbose): (f1, f2) for f1, f2 in chunk}
             for future in tqdm(as_completed(futures), total=len(chunk), desc=f"Comparing [{chunk_start}-{chunk_start+len(chunk)}]"):
                 try:
                     f1, f2 = futures[future]
@@ -1687,6 +1722,8 @@ def main():
                         help='Only scan the root directory (default is to include all subfolders)')
     parser.add_argument('--exclude-root', action='store_true',
                         help='Exclude videos from the root directory. Only useful with --include-subfolders.')
+    parser.add_argument('-v', '--verbose', action='store_true',
+                        help='Show debug output for comparison stages (useful for debugging why duplicates are not detected)')
     
     args = parser.parse_args()
     
@@ -1791,7 +1828,7 @@ def main():
             sys.exit(0)
         
         # Find duplicates using precomputed features
-        duplicate_groups = find_duplicate_groups_with_features(features_list)
+        duplicate_groups = find_duplicate_groups_with_features(features_list, verbose=args.verbose)
         
         # Save report
         report = {
