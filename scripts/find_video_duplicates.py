@@ -431,7 +431,8 @@ def compare_visual_fingerprints(hashes1: List[str], hashes2: List[str]) -> float
 def find_videos(
     directory: str,
     include_subfolders: Optional[List[str]] = None,
-    exclude_root: bool = False
+    exclude_root: bool = False,
+    include_hidden: bool = False
 ) -> List[str]:
     """
     Find all video files in directory.
@@ -441,6 +442,7 @@ def find_videos(
         include_subfolders: None = no subfolders, empty list = all subfolders (except __deduped),
                            list of paths = only those specific subfolders
         exclude_root: If True, don't include videos from the root directory
+        include_hidden: If True, include hidden subfolders (starting with .)
     
     Returns:
         List of video file paths
@@ -472,10 +474,14 @@ def find_videos(
         # include_subfolders is a list (possibly empty)
         if len(include_subfolders) == 0:
             # Include all subfolders recursively, but exclude __deduped
-            for root, _, files in os.walk(abs_directory):
+            for root, dirs, files in os.walk(abs_directory):
                 # Skip if this directory is inside __deduped
                 if is_in_deduped(root):
                     continue
+                
+                # Filter out hidden directories unless include_hidden is True
+                if not include_hidden:
+                    dirs[:] = [d for d in dirs if not d.startswith('.')]
                 
                 # Skip root directory if exclude_root is True
                 if exclude_root and root == abs_directory:
@@ -519,10 +525,14 @@ def find_videos(
             
             # Scan each folder recursively
             for folder in folders_to_scan:
-                for root, _, files in os.walk(folder):
+                for root, dirs, files in os.walk(folder):
                     # Skip if this directory is inside __deduped
                     if is_in_deduped(root):
                         continue
+                    
+                    # Filter out hidden directories unless include_hidden is True
+                    if not include_hidden:
+                        dirs[:] = [d for d in dirs if not d.startswith('.')]
                     
                     for file in files:
                         file_path = os.path.join(root, file)
@@ -1755,6 +1765,8 @@ def main():
                         help='Include subfolders in analysis. Without arguments: includes all subfolders (default). With arguments: includes only specified subfolder paths (relative to directory).')
     parser.add_argument('--no-subfolders', action='store_true',
                         help='Only scan the root directory (default is to include all subfolders)')
+    parser.add_argument('--include-hidden', action='store_true',
+                        help='Include hidden subfolders (starting with .). Default is to exclude them.')
     parser.add_argument('--exclude-root', action='store_true',
                         help='Exclude videos from the root directory. Only useful with --include-subfolders.')
     parser.add_argument('-v', '--verbose', action='store_true',
@@ -1798,8 +1810,10 @@ def main():
         if exclude_root:
             print("  (excluding root directory)")
         
+        include_hidden = args.include_hidden
+        
         # Find all videos
-        video_paths = find_videos(directory, include_subfolders=include_subfolders, exclude_root=exclude_root)
+        video_paths = find_videos(directory, include_subfolders=include_subfolders, exclude_root=exclude_root, include_hidden=include_hidden)
         
         if not video_paths:
             print("No videos found!")
