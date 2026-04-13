@@ -93,7 +93,7 @@ def compare_features(f1: VideoFeatures, f2: VideoFeatures, verbose: bool = False
                     sim = compare_audio_fingerprints(fp1_arr, fp2_arr)
                     if sim > best_sim:
                         best_sim = sim
-                if best_sim > 0.90:
+                if best_sim > 0.95:
                     matches += 1
                 match_details.append(f"{best_sim:.2f}")
             
@@ -705,7 +705,7 @@ def find_duplicate_groups_with_features(features_list: List[VideoFeatures], verb
     
     # Debug: Show comparison pairs for specific videos
     if verbose:
-        target_names = ["Hello", "World"]
+        target_names = ["Hello"]
         print(f"\n[DEBUG] Generated {len(all_pairs)} comparison pairs")
         print(f"[DEBUG] Looking for pairs involving: {target_names}")
         for f1, f2 in all_pairs:
