@@ -130,7 +130,7 @@ def compare_features(f1: VideoFeatures, f2: VideoFeatures, verbose: bool = False
     return False, "no_match"
 
 # Supported video extensions
-VIDEO_EXTENSIONS = {'.mp4', '.mkv', '.avi', '.mov'}
+VIDEO_EXTENSIONS = {'.mp4', '.mkv', '.avi', '.mov', '.webm'}
 
 # Configuration
 LENGTH_TOLERANCE = 0.15  # 15% length difference allowed
