@@ -1629,7 +1629,7 @@ def analyze_duplicate_set(videos_with_metadata: List[Tuple[str, Dict]]) -> Dict[
             "metadata": metadata,
             "quality_score": score,
             "quality_reason": reason,
-            "recommendation": "DELETE_CANDIDATE",
+            "recommendation": "DELETE",
             "reason": "",
             "better_alternative": None
         }
@@ -1658,11 +1658,20 @@ def analyze_duplicate_set(videos_with_metadata: List[Tuple[str, Dict]]) -> Dict[
     best_res = best_video_info.get("resolution", "unknown")
     best_codec = best_video_info.get("video_codec", "unknown")
     best_bitrate = best_video_info.get("video_bitrate_kbps", 0)
+    best_mtime = best_metadata.get("file_info", {}).get("modification_time", 0)
     
+    # Check if best won by modification time tie-breaker
+    other_scores = [results[p]["quality_score"] for p in results if p != best_path]
+    won_by_tiebreaker = other_scores and best_score in other_scores and max(other_scores) == best_score
+    
+    # Mark the best as KEEP
     results[best_path]["recommendation"] = "KEEP"
-    results[best_path]["reason"] = f"Best quality: {best_res}, {best_codec}, {results[best_path]['quality_score']} score"
+    if won_by_tiebreaker:
+        results[best_path]["reason"] = f"Best quality: {best_res}, {best_codec}, {results[best_path]['quality_score']} score (older file kept)"
+    else:
+        results[best_path]["reason"] = f"Best quality: {best_res}, {best_codec}, {results[best_path]['quality_score']} score"
     
-    # Mark others as DELETE_CANDIDATE with reference to best
+    # Mark others as DELETE with reference to best
     for video_path, result in results.items():
         if video_path != best_path:
             score = result["quality_score"]
@@ -1673,13 +1682,20 @@ def analyze_duplicate_set(videos_with_metadata: List[Tuple[str, Dict]]) -> Dict[
             video_codec = video_info.get("video_codec", "unknown")
             video_bitrate = video_info.get("video_bitrate_kbps", 0)
             
-            # Generate reason
+            # Generate reason with tie-breaker info
             if score_diff >= 30:
                 reason = f"Significantly lower quality ({score} vs {best_score})"
             elif score_diff >= 15:
                 reason = f"Lower quality ({score} vs {best_score})"
-            else:
+            elif score_diff >= 1:
                 reason = f"Lower quality ({score} vs {best_score})"
+            else:
+                # Scores are equal or within 1 point - check modification time
+                result_mtime = result["metadata"].get("file_info", {}).get("modification_time", 0)
+                if result_mtime > best_mtime:
+                    reason = f"Same quality ({score} vs {best_score}) - kept older file"
+                else:
+                    reason = f"Same quality ({score} vs {best_score})"
             
             # Add specific technical reasons
             video_width = video_info.get("width", 0)
@@ -1695,12 +1711,12 @@ def analyze_duplicate_set(videos_with_metadata: List[Tuple[str, Dict]]) -> Dict[
             if video_bitrate < best_bitrate * 0.7 and video_bitrate > 0:
                 reason += f"; lower bitrate ({video_bitrate} vs {best_bitrate} kbps)"
             
-            result["recommendation"] = "DELETE_CANDIDATE"
+            result["recommendation"] = "DELETE"
             result["reason"] = reason
             result["better_alternative"] = {
                 "filename": os.path.basename(best_path),
                 "quality_score": best_score,
-                "reason": f"Better quality: {best_res}, {best_codec}, {best_score} score"
+                "reason": results[best_path]["reason"]
             }
     
     return results
@@ -1773,8 +1789,8 @@ def organize_duplicates(directory: str, duplicate_groups: List[List[str]], dry_r
                         **metadata
                     }
                     
-                    # Add better_alternative for DELETE_CANDIDATE files
-                    if analysis.get("recommendation") == "DELETE_CANDIDATE":
+                    # Add better_alternative for DELETE files
+                    if analysis.get("recommendation") == "DELETE":
                         json_data["better_alternative"] = analysis.get("better_alternative")
                     
                     # Save metadata JSON file (video.mp4.json)
@@ -1791,7 +1807,7 @@ def organize_duplicates(directory: str, duplicate_groups: List[List[str]], dry_r
                             marker_path = os.path.join(folder_path, marker_filename)
                             open(marker_path, 'w').close()
                             print(f"  -> Created marker: {marker_filename}")
-                        elif recommendation == "DELETE_CANDIDATE":
+                        elif recommendation == "DELETE":
                             marker_filename = f"{os.path.basename(dest_path)}.delete"
                             marker_path = os.path.join(folder_path, marker_filename)
                             open(marker_path, 'w').close()

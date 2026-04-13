@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Dedup Delete Script
-Deletes all videos marked as DELETE_CANDIDATE from the __deduped folder.
+Deletes all videos marked as DELETE from the __deduped folder.
 Dry-run by default. Use --confirm to actually delete files.
 """
 
@@ -65,9 +65,9 @@ def get_associated_video_path(json_path: str) -> Optional[str]:
     return None
 
 
-def find_delete_candidates(set_path: str) -> List[Tuple[str, str, str, Dict]]:
+def find_delete_files(set_path: str) -> List[Tuple[str, str, str, Dict]]:
     """
-    Find all DELETE_CANDIDATE files in a duplicate set.
+    Find all DELETE files in a duplicate set.
     Returns list of (video_path, json_path, marker_path, metadata) tuples.
     """
     candidates = []
@@ -77,7 +77,7 @@ def find_delete_candidates(set_path: str) -> List[Tuple[str, str, str, Dict]]:
             json_path = os.path.join(set_path, file)
             metadata = load_video_metadata(json_path)
             
-            if metadata and metadata.get('recommendation') == 'DELETE_CANDIDATE':
+            if metadata and metadata.get('recommendation') == 'DELETE':
                 video_path = get_associated_video_path(json_path)
                 if video_path:
                     # Find the marker file (.delete)
@@ -111,7 +111,7 @@ def delete_file_pair(video_path: str, json_path: str, marker_path: Optional[str]
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Delete videos marked as DELETE_CANDIDATE from __deduped folder'
+        description='Delete videos marked as DELETE from __deduped folder'
     )
     parser.add_argument('directory', help='Base directory containing __deduped folder')
     parser.add_argument('--confirm', action='store_true',
@@ -138,12 +138,12 @@ def main():
     # Find all delete candidates
     all_candidates = []
     for set_path in sets:
-        candidates = find_delete_candidates(set_path)
+        candidates = find_delete_files(set_path)
         all_candidates.extend([(set_path, video, json_file, marker_file, metadata) 
                                for video, json_file, marker_file, metadata in candidates])
     
     if not all_candidates:
-        print("No DELETE_CANDIDATE files found.")
+        print("No DELETE files found.")
         print("All videos are marked as KEEP.")
         sys.exit(0)
     
@@ -229,7 +229,7 @@ def main():
     
     # Generate report
     report = {
-        "action": "delete_candidates",
+        "action": "delete",
         "timestamp": datetime.now().isoformat() + "Z",
         "base_directory": base_dir,
         "dry_run": not args.confirm,
@@ -260,7 +260,7 @@ def main():
         print(f"\n⚠️  {len(failed_files)} files could not be deleted. Check report for details.")
         sys.exit(1)
     elif args.confirm:
-        print(f"\n✓ All DELETE_CANDIDATE files have been removed.")
+        print(f"\n✓ All DELETE files have been removed.")
 
 
 if __name__ == '__main__':
