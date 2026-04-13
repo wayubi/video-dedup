@@ -1405,22 +1405,23 @@ def calculate_quality_score(metadata: Dict) -> Tuple[int, str]:
         optimal_bitrate = megapixels * 2000  # kbps
         
         # Calculate bitrate score - continuous scoring with diminishing returns above optimal
+        # Reduced maximum from 30 to 20 points to balance with increased fps weighting
         if effective_bitrate > 0 and optimal_bitrate > 0:
             ratio = effective_bitrate / optimal_bitrate
             
             if ratio < 0.3:
                 # Below 30% of optimal: linear penalty
-                bitrate_score = int(20 * (ratio / 0.3))
+                bitrate_score = int(13 * (ratio / 0.3))  # was 20, now ~13
                 bitrate_quality = "below optimal"
             elif ratio < 1.0:
-                # Between 30% and 100%: linear scaling from 8 to 20 points
+                # Between 30% and 100%: linear scaling from 5 to 13 points
                 # This ensures smooth transition to the "above optimal" formula
-                bitrate_score = int(8 + 12 * (ratio - 0.3) / 0.7)
+                bitrate_score = int(5 + 8 * (ratio - 0.3) / 0.7)  # was 8+12*(...), now 5+8*(...)
                 bitrate_quality = "approaching optimal"
             else:
                 # Above 100%: diminishing returns but still increasing
-                # sqrt curve: score = 20 * sqrt(ratio), max 30 points
-                bitrate_score = min(30, int(20 * (ratio ** 0.5)))
+                # sqrt curve: score = 13 * sqrt(ratio), max 20 points
+                bitrate_score = min(20, int(13 * (ratio ** 0.5)))  # was min(30, 20*(...)), now min(20, 13*(...))
                 bitrate_quality = "above optimal"
         else:
             bitrate_score = 0
@@ -1461,20 +1462,20 @@ def calculate_quality_score(metadata: Dict) -> Tuple[int, str]:
         score += 15
         reasons.append(f"HDR support ({hdr})")
     
-    # 6. Frame rate (10 points max)
+    # 6. Frame rate (20 points max - increased priority)
     fps = video_info.get("frame_rate", 0)
     if fps >= 59:  # 60fps
-        score += 10
-        reasons.append("60fps")
+        score += 20
+        reasons.append("60fps (high priority)")
     elif fps >= 29:  # 30fps
-        score += 7
-        reasons.append("30fps")
+        score += 14
+        reasons.append("30fps (high priority)")
     elif fps >= 24:
-        score += 5
-        reasons.append("24/25fps")
+        score += 10
+        reasons.append("24/25fps (high priority)")
     else:
-        score += 3
-        reasons.append(f"{fps}fps")
+        score += 6
+        reasons.append(f"{fps}fps (low priority)")
     
     reason_str = ", ".join(reasons)
     return max(0, score), reason_str
