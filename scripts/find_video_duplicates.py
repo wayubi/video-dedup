@@ -37,6 +37,12 @@ def compare_features(f1: VideoFeatures, f2: VideoFeatures) -> Tuple[bool, str]:
     if dur1 <= 0 or dur2 <= 0:
         return False, "no_duration"
 
+    # STAGE 0: File hash (instant - identical files)
+    hash1 = f1.get("file_hash", "")
+    hash2 = f2.get("file_hash", "")
+    if hash1 and hash2 and hash1 == hash2:
+        return True, "file_hash"
+
     # STAGE 1: Duration (fastest)
     duration_diff = abs(dur1 - dur2) / max(dur1, dur2, 1)
     if duration_diff > LENGTH_TOLERANCE:
@@ -101,7 +107,7 @@ def compare_features(f1: VideoFeatures, f2: VideoFeatures) -> Tuple[bool, str]:
 # ---------------------------------------------------------------------------
 # Supported video extensions
 # ---------------------------------------------------------------------------
-VIDEO_EXTENSIONS = {'.mp4', '.mkv', '.avi', '.mov'}
+VIDEO_EXTENSIONS = {'.mp4', '.mkv', '.avi', '.mov', '.webm'}
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -337,14 +343,21 @@ def extract_visual_samples(video_path: str, duration: float) -> List[Image.Image
     return images
 
 
-def generate_visual_fingerprint(images: List[Image.Image]) -> List[str]:
-    """Generate perceptual hashes for a list of images."""
+def generate_visual_fingerprint(images: List[Image.Image]) -> List[List[str]]:
+    """Generate region-based perceptual hashes per frame (top/middle/bottom)."""
     hashes = []
     for img in images:
         try:
             if img.mode != 'RGB':
                 img = img.convert('RGB')
-            hashes.append(str(imagehash.phash(img)))
+            w, h = img.size
+            regions = [
+                img.crop((0, 0, w, h // 3)),           # top
+                img.crop((0, h // 3, w, 2 * h // 3)),  # middle
+                img.crop((0, 2 * h // 3, w, h))        # bottom
+            ]
+            region_hashes = [str(imagehash.phash(r)) for r in regions]
+            hashes.append(region_hashes)
         except Exception:
             pass
     return hashes
@@ -359,26 +372,35 @@ def hamming_distance(hash1: str, hash2: str) -> int:
     return sum(c1 != c2 for c1, c2 in zip(bin1, bin2))
 
 
-def compare_visual_fingerprints(hashes1: List[str], hashes2: List[str]) -> float:
+def compare_visual_fingerprints(hashes1: List[List[str]], hashes2: List[List[str]]) -> float:
     """Compare visual fingerprints and return similarity (0-1)."""
     if not hashes1 or not hashes2:
         return 0.0
-    matches = 0
-    threshold = 10
-    used: Set[int] = set()
-    for h1 in hashes1:
-        best_match, best_dist = None, float('inf')
-        for i, h2 in enumerate(hashes2):
-            if i in used:
-                continue
-            dist = hamming_distance(h1, h2)
-            if dist < best_dist:
-                best_dist = dist
-                best_match = i
-        if best_match is not None and best_dist <= threshold:
-            matches += 1
-            used.add(best_match)
-    return matches / max(len(hashes1), len(hashes2))
+
+    n = min(len(hashes1), len(hashes2))
+    if n == 0:
+        return 0.0
+
+    threshold_match = 9
+    threshold_bad = 26
+    good_frames = 0
+
+    for i in range(n):
+        regions1 = hashes1[i]
+        regions2 = hashes2[i]
+        region_matches = 0
+        dists = [hamming_distance(r1, r2) for r1, r2 in zip(regions1, regions2)]
+        max_dist = max(dists)
+
+        for dist in dists:
+            if dist <= threshold_match:
+                region_matches += 1
+
+        is_good = (region_matches >= 2) and (max_dist <= threshold_bad)
+        if is_good:
+            good_frames += 1
+
+    return good_frames / n
 
 
 # ---------------------------------------------------------------------------
@@ -567,13 +589,30 @@ def find_duplicate_groups_with_features(features_list: List[VideoFeatures]) -> L
     print(f"Analyzing {n} videos for duplicates (parallel comparisons)...")
 
     all_pairs = []
-    for bucket_features in duration_groups.values():
+    added_pairs: Set[Tuple[str, str]] = set()
+
+    all_buckets = sorted(duration_groups.keys())
+
+    for bucket in all_buckets:
+        bucket_features = duration_groups[bucket]
         bsize = len(bucket_features)
-        if bsize < 2:
-            continue
-        for i in range(bsize):
-            for j in range(i + 1, bsize):
-                all_pairs.append((bucket_features[i], bucket_features[j]))
+
+        if bsize >= 2:
+            for i in range(bsize):
+                for j in range(i + 1, bsize):
+                    pair = tuple(sorted([bucket_features[i]["path"], bucket_features[j]["path"]]))
+                    if pair not in added_pairs:
+                        added_pairs.add(pair)
+                        all_pairs.append((bucket_features[i], bucket_features[j]))
+
+        adj_bucket = bucket + 30
+        if adj_bucket in duration_groups:
+            for f1 in bucket_features:
+                for f2 in duration_groups[adj_bucket]:
+                    pair = tuple(sorted([f1["path"], f2["path"]]))
+                    if pair not in added_pairs:
+                        added_pairs.add(pair)
+                        all_pairs.append((f1, f2))
 
     if not all_pairs:
         return []
@@ -674,7 +713,7 @@ def get_cache_key(video_path: str) -> str:
     if not os.path.exists(video_path):
         return ""
     stat = os.stat(video_path)
-    key_str = f"{video_path}|{stat.st_size}|{stat.st_mtime}|asd={AUDIO_SAMPLE_DURATION}"
+    key_str = f"{video_path}|{stat.st_size}|{stat.st_mtime}"
     return hashlib.sha256(key_str.encode()).hexdigest()[:16]
 
 
@@ -723,6 +762,7 @@ def load_cached_features(video_path: str) -> Optional[VideoFeatures]:
         "duration": entry.get("duration", 0.0),
         "resolution": tuple(entry.get("resolution", [0, 0])),
         "has_audio": entry.get("has_audio", False),
+        "file_hash": entry.get("file_hash", ""),
         "audio_fingerprints": entry.get("audio_fingerprints", []),
         "visual_hashes": entry.get("visual_hashes", []),
         "file_size": entry.get("size", 0),
@@ -747,6 +787,7 @@ def save_features_to_cache(features: VideoFeatures) -> None:
         "duration": features.get("duration", 0.0),
         "resolution": list(features.get("resolution", (0, 0))),
         "has_audio": features.get("has_audio", False),
+        "file_hash": features.get("file_hash", ""),
         "visual_hashes": features.get("visual_hashes", []),
         "audio_fingerprints": features.get("audio_fingerprints", []),
     }
@@ -756,6 +797,23 @@ def save_features_to_cache(features: VideoFeatures) -> None:
 # ---------------------------------------------------------------------------
 # Feature extraction
 # ---------------------------------------------------------------------------
+
+def compute_file_hash(video_path: str) -> str:
+    """Compute xxHash (murmur64) of entire file for quick duplicate detection."""
+    try:
+        import xxhash
+        h = xxhash.xxh64()
+        with open(video_path, 'rb') as f:
+            for chunk in iter(lambda: f.read(65536), b''):
+                h.update(chunk)
+        return h.hexdigest()
+    except ImportError:
+        md5 = hashlib.md5()
+        with open(video_path, 'rb') as f:
+            for chunk in iter(lambda: f.read(65536), b''):
+                md5.update(chunk)
+        return md5.hexdigest()
+
 
 def extract_all_features(video_path: str, temp_dir: Optional[str] = None) -> VideoFeatures:
     """Extract all features from a video once, with cache support."""
@@ -778,6 +836,7 @@ def extract_all_features(video_path: str, temp_dir: Optional[str] = None) -> Vid
         "visual_hashes": [],
         "file_size": os.path.getsize(video_path) if os.path.exists(video_path) else 0,
         "mtime": os.path.getmtime(video_path) if os.path.exists(video_path) else 0,
+        "file_hash": compute_file_hash(video_path),
     }
 
     metadata = get_video_metadata(video_path)
