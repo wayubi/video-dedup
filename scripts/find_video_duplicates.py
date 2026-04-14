@@ -764,18 +764,28 @@ except ImportError:
 
 def load_cache_index() -> Dict[str, Dict]:
     """Load cache index from disk."""
+    print(f"[CACHE] Loading cache index from {os.path.abspath(CACHE_INDEX)}")
     if os.path.exists(CACHE_INDEX):
         try:
             with open(CACHE_INDEX, 'r') as f:
-                return json.load(f)
-        except (json.JSONDecodeError, IOError):
+                result = json.load(f)
+                print(f"[CACHE] Cache index loaded ({len(result)} entries)")
+                return result
+        except (json.JSONDecodeError, IOError) as e:
+            print(f"[CACHE] Error loading cache index: {e}")
             pass
+    else:
+        print(f"[CACHE] Cache index does not exist (first run)")
     return {}
 
 
 def save_cache_index(index: Dict[str, Dict]) -> None:
     """Save cache index to disk with locking."""
+    cache_dir_abs = os.path.abspath(CACHE_DIR)
+    print(f"[CACHE] Creating cache directory {cache_dir_abs}")
+    print(f"[CACHE] CWD: {os.getcwd()}")
     os.makedirs(CACHE_DIR, exist_ok=True)
+    print(f"[CACHE] Directory exists after makedirs: {os.path.exists(cache_dir_abs)}")
     max_retries = 5
     for attempt in range(max_retries):
         try:
@@ -784,10 +794,12 @@ def save_cache_index(index: Dict[str, Dict]) -> None:
                 try:
                     with open(CACHE_INDEX, 'w') as f:
                         json.dump(index, f, indent=2)
+                        print(f"[CACHE] Saved cache index ({len(index)} entries)")
                 finally:
                     fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
             return
-        except (IOError, OSError):
+        except (IOError, OSError) as e:
+            print(f"[CACHE] Error saving cache index (attempt {attempt+1}): {e}")
             if attempt < max_retries - 1:
                 time.sleep(0.1 * (attempt + 1))
             else:
@@ -796,23 +808,29 @@ def save_cache_index(index: Dict[str, Dict]) -> None:
 
 def load_cached_features(video_path: str) -> Optional[VideoFeatures]:
     """Load features from cache if valid, else None."""
+    video_name = os.path.basename(video_path)
     cache_key = get_cache_key(video_path)
     if not cache_key:
+        print(f"[CACHE] Cache miss for {video_name} (no cache key)")
         return None
     
     index = load_cache_index()
     entry = index.get(cache_key)
     
     if entry is None:
+        print(f"[CACHE] Cache miss for {video_name} (no cached entry)")
         return None
     
     if os.path.abspath(entry.get("path", "")) != os.path.abspath(video_path):
+        print(f"[CACHE] Cache miss for {video_name} (path mismatch)")
         return None
     
     current_stat = os.stat(video_path)
     if entry.get("size") != current_stat.st_size or entry.get("mtime") != current_stat.st_mtime:
+        print(f"[CACHE] Cache miss for {video_name} (file changed: size={current_stat.st_size}, mtime={current_stat.st_mtime})")
         return None
     
+    print(f"[CACHE] Cache HIT for {video_name}")
     features: VideoFeatures = {
         "path": video_path,
         "duration": entry.get("duration", 0.0),
@@ -835,28 +853,36 @@ def save_features_to_cache(features: VideoFeatures) -> None:
     """Save features to cache."""
     video_path = features.get("path", "")
     if not video_path:
+        print(f"[CACHE] Error: No video_path in features")
         return
     
+    video_name = os.path.basename(video_path)
     cache_key = get_cache_key(video_path)
     if not cache_key:
+        print(f"[CACHE] Error: Could not generate cache key for {video_name}")
         return
     
-    index = load_cache_index()
+    print(f"[CACHE] Saving features to cache for {video_name}")
     
-    stat = os.stat(video_path)
-    index[cache_key] = {
-        "path": os.path.abspath(video_path),
-        "size": stat.st_size,
-        "mtime": stat.st_mtime,
-        "duration": features.get("duration", 0.0),
-        "resolution": list(features.get("resolution", (0, 0))),
-        "has_audio": features.get("has_audio", False),
-        "file_hash": features.get("file_hash", ""),
-        "visual_hashes": features.get("visual_hashes", []),
-        "audio_fingerprints": features.get("audio_fingerprints", []),
-    }
-    
-    save_cache_index(index)
+    try:
+        index = load_cache_index()
+        
+        stat = os.stat(video_path)
+        index[cache_key] = {
+            "path": os.path.abspath(video_path),
+            "size": stat.st_size,
+            "mtime": stat.st_mtime,
+            "duration": features.get("duration", 0.0),
+            "resolution": list(features.get("resolution", (0, 0))),
+            "has_audio": features.get("has_audio", False),
+            "file_hash": features.get("file_hash", ""),
+            "visual_hashes": features.get("visual_hashes", []),
+            "audio_fingerprints": features.get("audio_fingerprints", []),
+        }
+        
+        save_cache_index(index)
+    except Exception as e:
+        print(f"[CACHE] Error saving features for {video_name}: {e}")
 
 
 def extract_all_features(video_path: str, temp_dir: Optional[str] = None) -> VideoFeatures:
