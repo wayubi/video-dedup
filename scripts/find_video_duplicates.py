@@ -133,7 +133,7 @@ VIDEO_EXTENSIONS = {'.mp4', '.mkv', '.avi', '.mov', '.webm'}
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-LENGTH_TOLERANCE = 0.15          # 15% duration difference allowed
+LENGTH_TOLERANCE = 0.25          # 25% duration difference allowed (intros + credits)
 
 # Audio sampling — longer windows (20 s) give the cross-correlation enough
 # shared content to detect an offset even when one video has a ~6-second intro.
@@ -814,6 +814,38 @@ def load_cached_features(video_path: str) -> Optional[VideoFeatures]:
     return features
 
 
+def prune_cache(directory: str) -> int:
+    """Remove stale cache entries for videos that no longer exist or have changed."""
+    index = load_cache_index()
+
+    stale_keys = []
+
+    for key, entry in index.items():
+        video_path = entry.get("path", "")
+        if not video_path:
+            stale_keys.append(key)
+            continue
+
+        if not os.path.exists(video_path):
+            stale_keys.append(key)
+            continue
+
+        try:
+            stat = os.stat(video_path)
+            if entry.get("size") != stat.st_size or entry.get("mtime") != stat.st_mtime:
+                stale_keys.append(key)
+        except Exception:
+            stale_keys.append(key)
+
+    for key in stale_keys:
+        del index[key]
+
+    if stale_keys:
+        save_cache_index(index)
+
+    return len(stale_keys)
+
+
 def save_features_to_cache(features: VideoFeatures) -> None:
     video_path = features.get("path", "")
     if not video_path:
@@ -1417,6 +1449,10 @@ def main() -> None:
                         help='Exclude root directory (requires --include-subfolders)')
     parser.add_argument('-v', '--verbose', action='store_true',
                         help='Show verbose output for comparison stages (debugging)')
+    parser.add_argument('--prune-cache', action='store_true',
+                        help='Remove stale entries from feature cache before running')
+    parser.add_argument('--wipe-cache', action='store_true',
+                        help='Delete entire feature cache before running')
 
     args = parser.parse_args()
     directory = os.path.abspath(args.directory)
@@ -1428,6 +1464,15 @@ def main() -> None:
     if args.exclude_root and args.include_subfolders is None:
         print("Error: --exclude-root requires --include-subfolders to be specified")
         sys.exit(1)
+
+    if args.prune_cache:
+        pruned = prune_cache(directory)
+        print(f"Pruned {pruned} stale cache entries")
+
+    if args.wipe_cache:
+        if os.path.exists(CACHE_DIR):
+            shutil.rmtree(CACHE_DIR)
+            print(f"Deleted cache directory: {CACHE_DIR}")
 
     TEMP_DIR = tempfile.mkdtemp(prefix="video_dedup_")
     upscaling_results: Dict[str, Any] = {}
