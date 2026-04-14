@@ -1471,8 +1471,14 @@ def main() -> None:
 
     if args.wipe_cache:
         if os.path.exists(CACHE_DIR):
-            shutil.rmtree(CACHE_DIR)
-            print(f"Deleted cache directory: {CACHE_DIR}")
+            try:
+                if os.path.exists(CACHE_LOCK):
+                    os.remove(CACHE_LOCK)
+                if os.path.exists(CACHE_INDEX):
+                    os.remove(CACHE_INDEX)
+                print(f"Deleted cache contents: {CACHE_DIR}")
+            except Exception as e:
+                print(f"Warning: Could not fully delete cache: {e}")
 
     TEMP_DIR = tempfile.mkdtemp(prefix="video_dedup_")
     upscaling_results: Dict[str, Any] = {}
