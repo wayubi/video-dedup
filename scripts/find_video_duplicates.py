@@ -30,8 +30,11 @@ from scipy.ndimage import convolve
 VideoFeatures = Dict[str, Any]
 
 
-def compare_features(f1: VideoFeatures, f2: VideoFeatures, verbose: bool = False) -> Tuple[bool, str]:
+def compare_features(f1: VideoFeatures, f2: VideoFeatures, verbose: bool = False, visual_threshold: float = None) -> Tuple[bool, str]:
     """Compare two videos using precomputed features with multi-stage filtering."""
+    # Use provided threshold or fall back to global default
+    threshold = visual_threshold if visual_threshold is not None else VISUAL_SIM_THRESHOLD
+    
     dur1, dur2 = f1.get("duration", 0), f2.get("duration", 0)
     v1_name = os.path.basename(f1.get("path", ""))
     v2_name = os.path.basename(f2.get("path", ""))
@@ -144,9 +147,9 @@ def compare_features(f1: VideoFeatures, f2: VideoFeatures, verbose: bool = False
                 print(f"      hashes1: {len(hashes1)} frames, first={hashes1[0] if hashes1 else 'empty'}")
                 print(f"      hashes2: {len(hashes2)} frames, first={hashes2[0] if hashes2 else 'empty'}")
             visual_sim = 0.0
-        visual_pass = visual_sim >= 0.7
+        visual_pass = visual_sim >= threshold
         if verbose:
-            print(f"    Stage 5 (Visual): similarity={visual_sim:.4f}, threshold=0.7, result={'PASS' if visual_pass else 'FAIL'}")
+            print(f"    Stage 5 (Visual): similarity={visual_sim:.4f}, threshold={threshold}, result={'PASS' if visual_pass else 'FAIL'}")
         if visual_pass:
             return True, "visual_fingerprint"
     else:
@@ -164,7 +167,8 @@ VIDEO_EXTENSIONS = {'.mp4', '.mkv', '.avi', '.mov', '.webm'}
 LENGTH_TOLERANCE = 0.15  # 15% length difference allowed
 AUDIO_SAMPLE_DURATION = 5  # seconds per audio sample
 NUM_AUDIO_SAMPLES = 4  # number of samples to extract
-NUM_VISUAL_SAMPLES = 7  # number of frames to extract
+NUM_VISUAL_SAMPLES = 4  # number of frames to extract (default)
+VISUAL_SIM_THRESHOLD = 0.7  # minimum visual similarity threshold
 SKIP_FIRST_SECONDS = 10  # skip first 10 seconds to avoid intros/ads
 TEMP_DIR = None
 
@@ -341,10 +345,18 @@ def extract_visual_samples(video_path: str, duration: float) -> List[Image.Image
     
     images = []
     
-    # Sample from 20%, 40%, 60%, 80% of duration (avoid beginning and end)
-    sample_points = [0.2, 0.4, 0.6, 0.8]
+    # Calculate sample points based on NUM_VISUAL_SAMPLES
+    num_samples = NUM_VISUAL_SAMPLES
+    if num_samples == 4:
+        sample_points = [0.20, 0.35, 0.55, 0.75]
+    elif num_samples == 7:
+        sample_points = [0.15, 0.25, 0.35, 0.50, 0.65, 0.75, 0.85]
+    else:
+        # General formula for any number: spread between 15% and 85%
+        step = 0.70 / (num_samples - 1) if num_samples > 1 else 0
+        sample_points = [0.15 + i * step for i in range(num_samples)]
     
-    for point in sample_points[:NUM_VISUAL_SAMPLES]:
+    for point in sample_points:
         timestamp = duration * point
         
         try:
@@ -652,7 +664,7 @@ def is_same_video(video1: Tuple[str, float], video2: Tuple[str, float]) -> Tuple
         hashes2 = generate_visual_fingerprint(images2)
         
         visual_sim = compare_visual_fingerprints(hashes1, hashes2, False)
-        if visual_sim >= 0.7:  # At least half the frames match
+        if visual_sim >= VISUAL_SIM_THRESHOLD:  # At least half the frames match
             return True, "visual_fingerprint"
     
     return False, "no_match"
@@ -781,7 +793,7 @@ def find_duplicate_groups_with_features(features_list: List[VideoFeatures], verb
     with ProcessPoolExecutor(max_workers=n_workers) as executor:
         for chunk_start in range(0, len(all_pairs), chunk_size):
             chunk = all_pairs[chunk_start:chunk_start + chunk_size]
-            futures = {executor.submit(compare_features, f1, f2, verbose): (f1, f2) for f1, f2 in chunk}
+            futures = {executor.submit(compare_features, f1, f2, verbose, VISUAL_SIM_THRESHOLD): (f1, f2) for f1, f2 in chunk}
             for future in tqdm(as_completed(futures), total=len(chunk), desc=f"Comparing [{chunk_start}-{chunk_start+len(chunk)}]"):
                 try:
                     f1, f2 = futures[future]
@@ -839,8 +851,15 @@ def extract_visual_samples_batch(video_path: str, duration: float, temp_dir: str
     if temp_dir is None or duration <= 0:
         return []
     
-    # Better distributed points - more dense in the middle
-    sample_points = [0.18, 0.28, 0.38, 0.50, 0.62, 0.72, 0.82]
+    # Calculate sample points based on NUM_VISUAL_SAMPLES
+    num_samples = NUM_VISUAL_SAMPLES
+    if num_samples == 4:
+        sample_points = [0.20, 0.35, 0.55, 0.75]
+    elif num_samples == 7:
+        sample_points = [0.15, 0.25, 0.35, 0.50, 0.65, 0.75, 0.85]
+    else:
+        step = 0.70 / (num_samples - 1) if num_samples > 1 else 0
+        sample_points = [0.15 + i * step for i in range(num_samples)]
     
     images = []
     base_name = os.path.basename(video_path)
@@ -1869,6 +1888,10 @@ def main():
                         help='Include hidden subfolders (starting with .). Default is to exclude them.')
     parser.add_argument('--exclude-root', action='store_true',
                         help='Exclude videos from the root directory. Only useful with --include-subfolders.')
+    parser.add_argument('--visual-sim', type=float, default=None,
+                        help='Minimum visual similarity threshold (0.0-1.0). Lower = more lenient. Default: 0.7')
+    parser.add_argument('--visual-samples', type=int, default=None,
+                        help='Number of frames to extract per video for visual comparison (1-10). Default: 4')
     parser.add_argument('-v', '--verbose', action='store_true',
                         help='Show debug output for comparison stages (useful for debugging why duplicates are not detected)')
     
@@ -1913,6 +1936,17 @@ def main():
         print(f"Using {HASH_METHOD} for file hashing")
         
         include_hidden = args.include_hidden
+        
+        # Apply command-line overrides for visual settings
+        if args.visual_sim is not None:
+            global VISUAL_SIM_THRESHOLD
+            VISUAL_SIM_THRESHOLD = max(0.0, min(1.0, args.visual_sim))
+            print(f"Visual similarity threshold: {VISUAL_SIM_THRESHOLD}")
+        
+        if args.visual_samples is not None:
+            global NUM_VISUAL_SAMPLES
+            NUM_VISUAL_SAMPLES = max(1, min(10, args.visual_samples))
+            print(f"Visual samples: {NUM_VISUAL_SAMPLES}")
         
         # Find all videos
         video_paths = find_videos(directory, include_subfolders=include_subfolders, exclude_root=exclude_root, include_hidden=include_hidden)
