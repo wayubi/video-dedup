@@ -344,19 +344,22 @@ def extract_visual_samples(video_path: str, duration: float) -> List[Image.Image
 
 
 def generate_visual_fingerprint(images: List[Image.Image]) -> List[List[str]]:
-    """Generate region-based perceptual hashes per frame (top/middle/bottom)."""
+    """Generate region-based perceptual hashes per frame (3x3 grid)."""
     hashes = []
     for img in images:
         try:
             if img.mode != 'RGB':
                 img = img.convert('RGB')
             w, h = img.size
-            regions = [
-                img.crop((0, 0, w, h // 3)),           # top
-                img.crop((0, h // 3, w, 2 * h // 3)),  # middle
-                img.crop((0, 2 * h // 3, w, h))        # bottom
-            ]
-            region_hashes = [str(imagehash.phash(r)) for r in regions]
+            region_hashes = []
+            for row in range(3):
+                y1 = int(h * row / 3)
+                y2 = int(h * (row + 1) / 3)
+                for col in range(3):
+                    x1 = int(w * col / 3)
+                    x2 = int(w * (col + 1) / 3)
+                    region = img.crop((x1, y1, x2, y2))
+                    region_hashes.append(str(imagehash.phash(region)))
             hashes.append(region_hashes)
         except Exception:
             pass
@@ -373,7 +376,12 @@ def hamming_distance(hash1: str, hash2: str) -> int:
 
 
 def compare_visual_fingerprints(hashes1: List[List[str]], hashes2: List[List[str]]) -> float:
-    """Compare visual fingerprints and return similarity (0-1)."""
+    """
+    Compare visual fingerprints and return similarity (0-1).
+    Each frame has 9 regions (3x3 grid). A frame is "good" if at least 5 of 9
+    regions match (distance <= 9), allowing for 1-2 regions with watermarks
+    or other differences.
+    """
     if not hashes1 or not hashes2:
         return 0.0
 
@@ -382,22 +390,18 @@ def compare_visual_fingerprints(hashes1: List[List[str]], hashes2: List[List[str
         return 0.0
 
     threshold_match = 9
-    threshold_bad = 26
     good_frames = 0
 
     for i in range(n):
         regions1 = hashes1[i]
         regions2 = hashes2[i]
         region_matches = 0
-        dists = [hamming_distance(r1, r2) for r1, r2 in zip(regions1, regions2)]
-        max_dist = max(dists)
 
-        for dist in dists:
-            if dist <= threshold_match:
+        for r1, r2 in zip(regions1, regions2):
+            if hamming_distance(r1, r2) <= threshold_match:
                 region_matches += 1
 
-        is_good = (region_matches >= 2) and (max_dist <= threshold_bad)
-        if is_good:
+        if region_matches >= 5:
             good_frames += 1
 
     return good_frames / n
