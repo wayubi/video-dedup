@@ -116,7 +116,11 @@ def compare_features(f1: VideoFeatures, f2: VideoFeatures, verbose: bool = False
         print(f"    Stage 5 (Visual): hashes1={len(hashes1)} frames, hashes2={len(hashes2)} frames")
 
     if hashes1 and hashes2:
-        visual_sim = compare_visual_fingerprints(hashes1, hashes2, MAX_VISUAL_OFFSET)
+        if verbose:
+            print(f"      Frame details:")
+            for frame_idx, (h1_frame, h2_frame) in enumerate(zip(hashes1, hashes2)):
+                print(f"        Frame {frame_idx}: regions1={len(h1_frame)}, regions2={len(h2_frame)}")
+        visual_sim = compare_visual_fingerprints(hashes1, hashes2, MAX_VISUAL_OFFSET, verbose)
         if verbose:
             print(f"      Visual similarity: {visual_sim:.4f}, threshold=0.25")
         if visual_sim >= 0.25:
@@ -397,7 +401,7 @@ def hamming_distance(hash1: str, hash2: str) -> int:
     return sum(c1 != c2 for c1, c2 in zip(bin1, bin2))
 
 
-def compare_visual_fingerprints(hashes1: List[List[str]], hashes2: List[List[str]], max_offset: int = 1) -> float:
+def compare_visual_fingerprints(hashes1: List[List[str]], hashes2: List[List[str]], max_offset: int = 1, verbose: bool = False) -> float:
     """
     Compare visual fingerprints and return similarity (0-1).
     Each frame has 9 regions (3x3 grid). A frame is "good" if at least 5 of 9
@@ -417,13 +421,22 @@ def compare_visual_fingerprints(hashes1: List[List[str]], hashes2: List[List[str
 
     threshold_match = 9
 
-    def frame_similarity(h1: List[str], h2: List[str]) -> float:
+    def frame_similarity(h1: List[str], h2: List[str], verbose: bool = False) -> float:
         if not h1 or not h2:
             return 0.0
         region_matches = 0
+        dists = []
         for r1, r2 in zip(h1, h2):
-            if hamming_distance(r1, r2) <= threshold_match:
+            dist = hamming_distance(r1, r2)
+            dists.append(dist)
+            if dist <= threshold_match:
                 region_matches += 1
+        if verbose:
+            min_dist = min(dists)
+            max_dist = max(dists)
+            avg_dist = sum(dists) / len(dists)
+            print(f"        Regions: {len(h1)}, matches: {region_matches}/9, dists: {dists}")
+            print(f"          min={min_dist}, max={max_dist}, avg={avg_dist:.1f}")
         return 1.0 if region_matches >= 5 else 0.0
 
     best_count = 0
@@ -435,10 +448,15 @@ def compare_visual_fingerprints(hashes1: List[List[str]], hashes2: List[List[str
         lo = max(0, i - max_offset)
         hi = min(n2, i + max_offset + 1)
 
+        if verbose:
+            print(f"        Frame {i}: searching offsets {lo} to {hi-1}")
+
         for j in range(lo, hi):
-            sim = frame_similarity(regions1, hashes2[j])
-            if sim > best_frame_match:
-                best_frame_match = sim
+            current_sim = frame_similarity(regions1, hashes2[j], verbose)
+            if verbose:
+                print(f"          Offset {j-i}: similarity={current_sim:.4f}")
+            if current_sim > best_frame_match:
+                best_frame_match = current_sim
 
         if best_frame_match > 0:
             best_count += 1
@@ -722,12 +740,21 @@ def get_video_resolution(video_path: str) -> Tuple[int, int]:
 
 
 def extract_visual_samples_batch(video_path: str, duration: float, temp_dir: str) -> List[Image.Image]:
+    """Extract frame samples from video, skipping first SKIP_FIRST_SECONDS to avoid intros."""
     if temp_dir is None or duration <= 0:
         return []
+
+    effective_start = SKIP_FIRST_SECONDS
+    available = duration - effective_start
+
+    if available <= 0:
+        return []
+
     images = []
     base_name = os.path.basename(video_path)
+
     for i, point in enumerate([0.2, 0.4, 0.6, 0.8][:NUM_VISUAL_SAMPLES]):
-        timestamp = duration * point
+        timestamp = effective_start + (available * point)
         try:
             temp_frame = os.path.join(temp_dir, f"frame_{base_name}_{i}.jpg")
             cmd = [
