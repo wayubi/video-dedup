@@ -117,12 +117,11 @@ def compare_features(f1: VideoFeatures, f2: VideoFeatures, verbose: bool = False
 
     if hashes1 and hashes2:
         if verbose:
-            print(f"      Frame details:")
-            for frame_idx, (h1_frame, h2_frame) in enumerate(zip(hashes1, hashes2)):
-                print(f"        Frame {frame_idx}: regions1={len(h1_frame)}, regions2={len(h2_frame)}")
+            print(f"      Visual: {len(hashes1)} frames with max_offset={MAX_VISUAL_OFFSET}")
         visual_sim = compare_visual_fingerprints(hashes1, hashes2, MAX_VISUAL_OFFSET, verbose)
         if verbose:
-            print(f"      Visual similarity: {visual_sim:.4f}, threshold=0.25")
+            matched_frames = int(visual_sim * len(hashes1))
+            print(f"      Visual similarity: {visual_sim:.4f} ({matched_frames}/{len(hashes1)} frames matched), threshold=0.25")
         if visual_sim >= 0.25:
             return True, "visual_fingerprint"
 
@@ -155,7 +154,7 @@ MAX_AUDIO_OFFSET_SECONDS = 30
 # 6 frequency bands → 6.25 × 6 = 37.5 fingerprint values/s
 _FP_VALUES_PER_SECOND = 37.5
 
-NUM_VISUAL_SAMPLES = 4
+NUM_VISUAL_SAMPLES = 7
 SKIP_FIRST_SECONDS = 10
 MAX_VISUAL_OFFSET = 3  # For visual offset search (±3 frame positions)
 TEMP_DIR = None
@@ -352,7 +351,9 @@ def extract_visual_samples(video_path: str, duration: float) -> List[Image.Image
     if TEMP_DIR is None:
         return []
     images = []
-    for point in [0.2, 0.4, 0.6, 0.8][:NUM_VISUAL_SAMPLES]:
+    # 15 evenly distributed points from 5% to 95% (skip 5% at each end)
+    points = [(i + 0.5) / NUM_VISUAL_SAMPLES * 0.9 + 0.05 for i in range(NUM_VISUAL_SAMPLES)]
+    for point in points:
         timestamp = duration * point
         try:
             temp_frame = os.path.join(TEMP_DIR, f"frame_{os.path.basename(video_path)}_{point}.jpg")
@@ -419,7 +420,7 @@ def compare_visual_fingerprints(hashes1: List[List[str]], hashes2: List[List[str
     if n1 == 0 or n2 == 0:
         return 0.0
 
-    threshold_match = 9
+    threshold_match = 15
 
     def frame_similarity(h1: List[str], h2: List[str], verbose: bool = False) -> float:
         if not h1 or not h2:
@@ -437,7 +438,7 @@ def compare_visual_fingerprints(hashes1: List[List[str]], hashes2: List[List[str
             avg_dist = sum(dists) / len(dists)
             print(f"        Regions: {len(h1)}, matches: {region_matches}/9, dists: {dists}")
             print(f"          min={min_dist}, max={max_dist}, avg={avg_dist:.1f}")
-        return 1.0 if region_matches >= 5 else 0.0
+        return 1.0 if region_matches >= 3 else 0.0
 
     best_count = 0
 
@@ -753,7 +754,9 @@ def extract_visual_samples_batch(video_path: str, duration: float, temp_dir: str
     images = []
     base_name = os.path.basename(video_path)
 
-    for i, point in enumerate([0.2, 0.4, 0.6, 0.8][:NUM_VISUAL_SAMPLES]):
+    # 15 evenly distributed points from 5% to 95% of available range (after skipping first 10s)
+    points = [(i + 0.5) / NUM_VISUAL_SAMPLES * 0.9 + 0.05 for i in range(NUM_VISUAL_SAMPLES)]
+    for i, point in enumerate(points):
         timestamp = effective_start + (available * point)
         try:
             temp_frame = os.path.join(temp_dir, f"frame_{base_name}_{i}.jpg")
