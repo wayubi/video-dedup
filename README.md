@@ -4,31 +4,40 @@ A Docker-based tool that identifies duplicate videos by content similarity rathe
 
 ## How It Works
 
-The tool uses a two-tier approach:
+The tool uses a multi-stage comparison pipeline:
 
-1. **Audio Fingerprinting (Primary)** - Extracts audio samples from multiple points in each video and compares spectral fingerprints
-2. **Visual Fingerprinting (Fallback)** - If videos lack audio, compares perceptual hashes of frames from different timestamps
+1. **Stage 0: File Hash** - Instant exact match for identical files
+2. **Stage 1: Duration** - Fast pre-filter using duration similarity
+3. **Stage 2: Aspect Ratio** - Quick visual compatibility check
+4. **Stage 3: File Size** - Basic size comparison
+5. **Stage 4: Audio Fingerprinting (Primary)** - Spectral fingerprint comparison
+6. **Stage 5: Visual Fingerprinting (Fallback)** - Perceptual hash comparison
 
-**Smart Sampling Strategy:**
-- Skips the first 10 seconds to avoid intros/ads
-- Samples from 20%, 40%, 60%, 80% of video duration
-- Groups videos by approximate duration for efficiency
+**Smart Comparison Strategy:**
+- Short/medium videos (< 10 min) are compared against ALL videos (ensures compilations match full videos)
+- Long videos (>= 10 min) use duration-based bucketing for efficiency
+- Duration and file size checks are skipped when comparing two short videos
+- Audio OR visual match is sufficient (either one passing = duplicate detected)
 
 ## Features
 
 - ✅ Detects duplicates even with different encodings/resolutions
-- ✅ Handles 15% length differences (accounts for cuts/additions)
-- ✅ Automatic fallback from audio to visual analysis
+- ✅ **Cluster-based sampling** - Captures frames/samples ±10s around anchor points to handle intros
+- ✅ **Smart duration handling** - Short videos compared against all; long videos use bucketing
+- ✅ **Automatic fallback** - Audio primary, visual fallback for silent videos
+- ✅ **Early exit** - Audio match is sufficient (visual not checked if audio passes)
 - ✅ **Upscaling detection** - identifies fake 1080p/4K videos (720p upscaled)
 - ✅ **Flexible folder scanning** - scan root only, all subfolders, or specific subfolders
 - ✅ **Smart organization** - moves duplicates to hidden `__deduped/` folder
 - ✅ **Quality scoring** - automatically ranks duplicates by quality (resolution, bitrate, codec, HDR)
 - ✅ **Detailed metadata** - generates JSON metadata files with technical specs for each video
-- ✅ **Intelligent recommendations** - marks best quality as "KEEP", others as "DELETE_CANDIDATE"
+- ✅ **Intelligent recommendations** - marks best quality as "KEEP", others as "DELETE"
 - ✅ **Cleanup scripts** - separate tools to safely delete candidates and restore keep files
 - ✅ Generates JSON report with detailed results
 - ✅ Supports MP4, MKV, AVI, MOV formats
 - ✅ Progress tracking with detailed console output
+- ✅ **Feature caching** - speeds up repeated scans
+- ✅ **Verbose mode** - detailed comparison logs for debugging
 - ✅ Dockerized for easy deployment
 
 ## Quick Start
@@ -64,6 +73,9 @@ docker-compose exec video-dedup python /app/scripts/find_video_duplicates.py /vi
 # Optional: dry run to preview without moving files
 docker-compose exec video-dedup python /app/scripts/find_video_duplicates.py /videos --dry-run
 
+# Optional: verbose mode for detailed comparison logs
+docker-compose exec video-dedup python /app/scripts/find_video_duplicates.py /videos --verbose
+
 # Stop the container when done
 docker-compose down
 ```
@@ -74,11 +86,15 @@ docker-compose down
 python /app/scripts/find_video_duplicates.py /videos [OPTIONS]
 
 Options:
-  --dry-run                       Show duplicates without moving files
-  --report FILENAME               Save JSON report (default: duplicates_report.json)
-  --detect-upscaling              Analyze videos for upscaling (720p encoded as 1080p/4K)
-  --include-subfolders [PATH...]  Include subfolders in scan. Without paths: all subfolders. With paths: only specified folders.
-  --exclude-root                  Exclude root directory (use with --include-subfolders)
+  -h, --help                       Show this help message
+  --dry-run                         Show duplicates without moving files
+  --report FILENAME                Save JSON report (default: duplicates_report.json)
+  --detect-upscaling               Analyze videos for upscaling (720p encoded as 1080p/4K)
+  --include-subfolders [PATH...]   Include subfolders in scan. Without paths: all subfolders. With paths: only specified folders.
+  --exclude-root                   Exclude root directory (use with --include-subfolders)
+  -v, --verbose                    Show verbose output for comparison stages (debugging)
+  --prune-cache                   Remove stale entries from feature cache before running
+  --wipe-cache                    Delete entire feature cache before running
 ```
 
 ## Output Structure
@@ -208,20 +224,86 @@ docker-compose exec video-dedup python /app/scripts/find_video_duplicates.py /vi
 
 ## How Duplicate Detection Works
 
+### Comparison Pipeline
+
+Videos go through a series of comparison stages. Each stage either passes or fails the comparison:
+
+| Stage | Name | Description | Threshold |
+|-------|------|-------------|-----------|
+| 0 | File Hash | Exact file match | Exact match |
+| 1 | Duration | Length similarity | 25% difference allowed |
+| 2 | Aspect Ratio | Resolution ratio | 5% difference allowed |
+| 3 | File Size | Size similarity | 90% difference allowed |
+| 4 | Audio | Spectral fingerprint comparison | Per-sample threshold |
+| 5 | Visual | Perceptual hash comparison | Per-frame threshold |
+
+A video is considered a duplicate if **either** audio or visual passes (or both).
+
+### Duration and Size Checks
+
+- For bucket comparisons (long videos >= 10 min): Normal 25% duration and 90% size tolerances apply
+- For short video comparisons (< 10 min): Duration and size checks are skipped
+
+This allows compilations (5-10 min) and short clips (< 2 min) to match against full-length videos.
+
 ### Audio Fingerprinting
-1. Extracts 5-second audio samples from 4 different timestamps
-2. Generates spectral fingerprints using FFT analysis
-3. Compares fingerprints using correlation
-4. Match requires ≥50% sample similarity
+
+1. Extracts 5 anchor points from each video (5% to 95% of available duration)
+2. For each anchor, captures 3 samples: anchor, anchor-10s, anchor+10s (15 total per video)
+3. Generates spectral fingerprints using FFT analysis
+4. Compares using cross-correlation with ±30s offset search
+5. Match requires audio samples to pass similarity threshold
 
 ### Visual Fingerprinting (Fallback)
-1. Extracts frames at 20%, 40%, 60%, 80% of duration
-2. Generates perceptual hashes (pHash) for each frame
-3. Compares using Hamming distance
-4. Match requires ≥50% frame similarity
 
-### Duration Matching
-Videos are compared only if their durations are within 15% of each other.
+1. Extracts 5 anchor frames from each video (5% to 95% of available duration)
+2. For each anchor, captures 3 frames: anchor, anchor-10s, anchor+10s (15 total per video)
+3. Generates 3x3 region-based perceptual hashes (pHash) for each frame
+4. Compares using Hamming distance
+5. Match requires frames to have 3+ of 9 regions matching
+
+### Short Video Handling
+
+Videos under 10 minutes are compared against ALL videos (no bucketing). This ensures:
+- Short clips (< 2 min) can match against long videos
+- Compilations (5-10 min) can match against long videos
+- Compilations can match against each other
+
+## Verbose Mode
+
+Use `--verbose` to see detailed comparison logs:
+
+```bash
+python find_video_duplicates.py /videos --verbose
+```
+
+Example output:
+```
+Comparing: video1.mp4 vs video2.mp4
+  Stage 1 (Duration): diff=0.0427, threshold=0.25, result=PASS
+  Stage 2 (Aspect Ratio): ratio1=1.778, ratio2=1.778, diff=0.0000, threshold=0.05, result=PASS
+  Stage 3 (File Size): size1=240967540, size2=199977928, diff=0.1701, threshold=0.90, result=PASS
+  Stage 4 (Audio): 5 anchor clusters
+    Sample 0: anchor=74.7s
+      Sample 0a: ts=74.7s vs Sample 0a: ts=32.7s: similarity=0.7142
+      Sample 0a: ts=74.7s vs Sample 1a: ts=22.7s: similarity=0.6523
+      ...
+      Best for sample 0: sample 0a ts=32.7s similarity=0.7142 (threshold=0.8, result=FAIL)
+    ...
+    Audio: 3/5 anchors matched, required=2, threshold=0.8 (result=PASS)
+```
+
+## Feature Caching
+
+The tool caches extracted features to speed up repeated scans:
+
+```bash
+# Remove stale cache entries (files that changed)
+python find_video_duplicates.py /videos --prune-cache
+
+# Delete entire cache (force re-extraction)
+python find_video_duplicates.py /videos --wipe-cache
+```
 
 ## Requirements
 
@@ -237,12 +319,12 @@ Videos are compared only if their durations are within 15% of each other.
 - numpy & scipy (signal processing)
 - imagehash & Pillow (perceptual hashing)
 - audioread (audio extraction)
-- tqdm (progress bars)
 
 **Performance:**
-- Duration-based bucketing for efficiency
-- Parallel-ready structure (samples processed sequentially per video)
-- Memory-efficient temp file management
+- Duration-based bucketing for long videos (efficiency)
+- All-pairs comparison for short videos (completeness)
+- Parallel feature extraction
+- Feature caching
 
 ## Upscaling Detection
 
@@ -280,13 +362,9 @@ The tool uses three complementary approaches with conservative thresholds:
 
 **Console Output:**
 ```
-Upscaling Analysis Summary:
-  Total videos analyzed: 45
-  Potentially upscaled: 3
-
-  Flagged videos:
-    - movie_4k.mp4 (3840x2160) [confidence: 0.82]
-    - show_upscaled.mkv (1920x1080) [confidence: 0.71]
+Upscaling: 3 of 45 flagged
+  - movie_4k.mp4 (3840x2160) [conf: 0.82]
+  - show_upscaled.mkv (1920x1080) [conf: 0.71]
 ```
 
 **JSON Report Fields:**
@@ -358,9 +436,7 @@ Each video in `__deduped/` gets a `{filename}.json` file:
 
 ### Delete Candidates (`dedup_delete.py`)
 
-Safely delete all videos marked as `DELETE_CANDIDATE`.
-
-**Dry-run by default** - shows what would be deleted without actually doing it.
+Safely delete all videos marked as `DELETE` from the `__deduped/` folder.
 
 ```bash
 # Show what would be deleted (dry run)
@@ -371,7 +447,7 @@ docker-compose exec video-dedup python /app/scripts/dedup_delete.py /videos --co
 ```
 
 **Features:**
-- Only deletes files with `recommendation: "DELETE_CANDIDATE"`
+- Only deletes files with `recommendation: "DELETE"`
 - Deletes both video file and its `.json` metadata
 - Removes empty duplicate set folders
 - Generates deletion report
@@ -383,11 +459,14 @@ docker-compose exec video-dedup python /app/scripts/dedup_delete.py /videos --co
 
 ### Restore Files (`dedup_restore.py`)
 
-Restore all videos marked as `KEEP` to their original locations.
+Restore all videos from `__deduped/` back to their original locations.
 
 ```bash
-# Restore all KEEP files to original locations
+# Restore all files to original locations
 docker-compose exec video-dedup python /app/scripts/dedup_restore.py /videos
+
+# Restore and clean up entire __deduped folder
+docker-compose exec video-dedup python /app/scripts/dedup_restore.py /videos --cleanup
 ```
 
 **Features:**
@@ -395,15 +474,8 @@ docker-compose exec video-dedup python /app/scripts/dedup_restore.py /videos
 - Creates parent directories if missing
 - Handles filename collisions (adds `_restored_001` suffix)
 - Deletes from `__deduped/` after successful restore
-- Removes empty folders including `__deduped/` itself
-- Generates restoration report
-
-**Process:**
-1. Reads all `KEEP` files from `__deduped/`
-2. Moves each file back to its original location
-3. Removes the `.json` metadata file
-4. Cleans up empty folders
-5. Removes `__deduped/` folder when empty
+- Cleans up empty folders
+- `--cleanup` flag removes entire `__deduped/` folder including non-dedup files
 
 ### Workflow Example
 
@@ -442,6 +514,12 @@ chmod -R 755 /path/to/videos
 
 ### Out of memory
 For very large video collections, process in batches or increase Docker memory limits.
+
+### False positives/negatives
+Use `--verbose` to see detailed comparison logs. Adjust thresholds in the script if needed:
+- `AUDIO_THRESHOLD`: Similarity threshold for audio samples (default: 0.8)
+- `AUDIO_REQUIRED_MATCHES`: Number of anchor clusters that must match (default: 2)
+- `VISUAL_FRAME_THRESHOLD`: Regions threshold for visual frames (default: 3/9)
 
 ## Contributing
 
