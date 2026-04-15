@@ -85,7 +85,8 @@ def compare_features(f1: VideoFeatures, f2: VideoFeatures, verbose: bool = False
         fps2 = f2.get("audio_fingerprints", [])
 
         if fps1 and fps2:
-            print(f"    Stage 4 (Audio): {len(fps1)} samples from each video, max_offset={MAX_AUDIO_OFFSET_SECONDS}s")
+            if verbose:
+                print(f"    Stage 4 (Audio): {len(fps1)} samples from each video, max_offset={MAX_AUDIO_OFFSET_SECONDS}s")
             matches = 0
             for i, fp1_list in enumerate(fps1):
                 fp1_arr = np.array(fp1_list)
@@ -105,18 +106,21 @@ def compare_features(f1: VideoFeatures, f2: VideoFeatures, verbose: bool = False
                     matches += 1
 
             required = max(1, round(AUDIO_MATCH_RATIO * NUM_AUDIO_SAMPLES))
-            print(f"      Audio: {matches}/{len(fps1)} matched, required={required}, threshold={AUDIO_THRESHOLD}")
+            if verbose:
+                print(f"      Audio: {matches}/{len(fps1)} matched, required={required}, threshold={AUDIO_THRESHOLD}")
 
     # STAGE 5: Visual hash
     hashes1 = f1.get("visual_hashes", [])
     hashes2 = f2.get("visual_hashes", [])
 
     if hashes1 and hashes2:
-        print(f"    Stage 5 (Visual): {len(hashes1)} frames with max_offset={MAX_VISUAL_OFFSET}")
+        if verbose:
+            print(f"    Stage 5 (Visual): {len(hashes1)} frames with max_offset={MAX_VISUAL_OFFSET}")
         visual_sim = compare_visual_fingerprints(hashes1, hashes2, MAX_VISUAL_OFFSET, verbose)
         matched_frames = int(visual_sim * len(hashes1))
         required = max(1, round(VISUAL_MATCH_RATIO * NUM_VISUAL_SAMPLES))
-        print(f"      Visual: {matched_frames}/{len(hashes1)} matched, required={required}, threshold={VISUAL_THRESHOLD}")
+        if verbose:
+            print(f"      Visual: {matched_frames}/{len(hashes1)} matched, required={required}, threshold={VISUAL_THRESHOLD}")
         if visual_sim >= VISUAL_THRESHOLD:
             return True, "visual_fingerprint"
 
