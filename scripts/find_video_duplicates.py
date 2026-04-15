@@ -103,11 +103,11 @@ def compare_features(f1: VideoFeatures, f2: VideoFeatures, verbose: bool = False
                     if sim > best_sim:
                         best_sim = sim
                         best_idx = j
-                print(f"        Best for sample {i}: sample {best_idx} with similarity={best_sim:.4f} (threshold=0.75)")
-                if best_sim > 0.75:
+                print(f"        Best for sample {i}: sample {best_idx} with similarity={best_sim:.4f} (threshold={AUDIO_THRESHOLD})")
+                if best_sim > AUDIO_THRESHOLD:
                     matches += 1
 
-            required = max(1, len(fps1) // 2)  # Require ~50% match
+            required = max(1, round(AUDIO_MATCH_RATIO * NUM_AUDIO_SAMPLES))
             if verbose:
                 print(f"      Audio matches: {matches}/{len(fps1)} (required={required})")
             if matches >= required:
@@ -126,8 +126,8 @@ def compare_features(f1: VideoFeatures, f2: VideoFeatures, verbose: bool = False
         visual_sim = compare_visual_fingerprints(hashes1, hashes2, MAX_VISUAL_OFFSET, verbose)
         if verbose:
             matched_frames = int(visual_sim * len(hashes1))
-            print(f"      Visual similarity: {visual_sim:.4f} ({matched_frames}/{len(hashes1)} frames matched), threshold=0.25")
-        if visual_sim >= 0.25:
+            print(f"      Visual similarity: {visual_sim:.4f} ({matched_frames}/{len(hashes1)} matched, required={max(1, round(VISUAL_MATCH_RATIO * NUM_VISUAL_SAMPLES))}), threshold={VISUAL_THRESHOLD}")
+        if visual_sim >= VISUAL_THRESHOLD:
             return True, "visual_fingerprint"
 
     return False, "no_match"
@@ -162,6 +162,21 @@ _FP_VALUES_PER_SECOND = 37.5
 NUM_VISUAL_SAMPLES = 7
 SKIP_FIRST_SECONDS = 10
 MAX_VISUAL_OFFSET = 3  # For visual offset search (±3 frame positions)
+
+# VISUAL MATCHING CONFIGURATION
+# - threshold: similarity (0.0-1.0) for overall visual similarity
+# - ratio: required matches = VISUAL_MATCH_RATIO * NUM_VISUAL_SAMPLES
+# - example: 0.25 * 7 = 1.75 → requires 2 frames (~29%)
+VISUAL_THRESHOLD = 0.25
+VISUAL_MATCH_RATIO = 0.25
+
+# AUDIO MATCHING CONFIGURATION
+# - threshold: similarity (0.0-1.0) - per-sample similarity required
+# - ratio: required matches = AUDIO_MATCH_RATIO * NUM_AUDIO_SAMPLES
+# - example: 0.4 * 7 = 2.8 → requires 3 frames (~43%)
+AUDIO_THRESHOLD = 0.75
+AUDIO_MATCH_RATIO = 0.4
+
 TEMP_DIR = None
 
 # Upscaling Detection Configuration
