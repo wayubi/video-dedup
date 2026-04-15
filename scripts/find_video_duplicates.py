@@ -93,7 +93,7 @@ def compare_features(f1: VideoFeatures, f2: VideoFeatures, verbose: bool = False
             for i, fp1_list in enumerate(fps1):
                 fp1_arr = np.array(fp1_list)
                 best_sim = 0.0
-                best_idx = -1
+                best_idx = 0
                 if verbose:
                     verbose_lines.append(f"      Sample {i}: searching samples 0 to {len(fps2)-1}")
                 for j, fp2_list in enumerate(fps2):
@@ -475,6 +475,7 @@ def compare_visual_fingerprints(hashes1: List[List[str]], hashes2: List[List[str
 
         lo = max(0, i - max_offset)
         hi = min(n2, i + max_offset + 1)
+        best_frame_idx = lo
 
         if verbose:
             verbose_lines.append(f"      Frame {i}: searching frames {lo} to {hi-1}")
@@ -487,7 +488,7 @@ def compare_visual_fingerprints(hashes1: List[List[str]], hashes2: List[List[str
                 best_frame_match = current_sim
                 best_frame_idx = j
 
-        if verbose and best_frame_match >= VISUAL_FRAME_THRESHOLD:
+        if verbose:
             result = "PASS" if best_frame_match >= VISUAL_FRAME_THRESHOLD else "FAIL"
             verbose_lines.append(f"          Best for frame {i}: frame {best_frame_idx} similarity={best_frame_match:.4f} (threshold={VISUAL_FRAME_THRESHOLD:.4f}, result={result})")
 
