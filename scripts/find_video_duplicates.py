@@ -176,7 +176,7 @@ VISUAL_MATCH_RATIO = 0.25
 # - threshold: similarity (0.0-1.0) - per-sample similarity required
 # - ratio: required matches = AUDIO_MATCH_RATIO * NUM_AUDIO_SAMPLES
 # - example: 0.4 * 7 = 2.8 → requires 3 frames (~43%)
-AUDIO_THRESHOLD = 0.65
+AUDIO_THRESHOLD = 0.75
 AUDIO_MATCH_RATIO = 0.4
 
 TEMP_DIR = None
