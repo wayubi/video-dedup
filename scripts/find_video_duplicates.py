@@ -58,10 +58,18 @@ def compare_features(f1: VideoFeatures, f2: VideoFeatures, verbose: bool = False
         return True, "file_hash", verbose_lines
 
     # STAGE 1: Duration (fastest)
+    # Skip duration check if both videos are short (< threshold) - they may be clips
+    v1_short = dur1 < FORCE_COMPARE_THRESHOLD
+    v2_short = dur2 < FORCE_COMPARE_THRESHOLD
+    skip_duration_check = v1_short and v2_short
+
     duration_diff = abs(dur1 - dur2) / max(dur1, dur2, 1)
     if verbose:
-        verbose_lines.append(f"    Stage 1 (Duration): diff={duration_diff:.4f}, threshold={LENGTH_TOLERANCE}, result={'PASS' if duration_diff <= LENGTH_TOLERANCE else 'FAIL'}")
-    if duration_diff > LENGTH_TOLERANCE:
+        if skip_duration_check:
+            verbose_lines.append(f"    Stage 1 (Duration): skipped (both videos < {FORCE_COMPARE_THRESHOLD}s)")
+        else:
+            verbose_lines.append(f"    Stage 1 (Duration): diff={duration_diff:.4f}, threshold={LENGTH_TOLERANCE}, result={'PASS' if duration_diff <= LENGTH_TOLERANCE else 'FAIL'}")
+    if not skip_duration_check and duration_diff > LENGTH_TOLERANCE:
         return False, "duration_mismatch", verbose_lines
 
     # STAGE 2: Aspect ratio check
@@ -82,8 +90,11 @@ def compare_features(f1: VideoFeatures, f2: VideoFeatures, verbose: bool = False
     if size1 > 0 and size2 > 0:
         size_diff = abs(size1 - size2) / max(size1, size2)
         if verbose:
-            verbose_lines.append(f"    Stage 3 (File Size): size1={size1}, size2={size2}, diff={size_diff:.4f}, threshold=0.90, result={'PASS' if size_diff <= 0.90 else 'FAIL'}")
-        if size_diff > 0.90:
+            if skip_duration_check:
+                verbose_lines.append(f"    Stage 3 (File Size): skipped (both videos < {FORCE_COMPARE_THRESHOLD}s)")
+            else:
+                verbose_lines.append(f"    Stage 3 (File Size): size1={size1}, size2={size2}, diff={size_diff:.4f}, threshold=0.90, result={'PASS' if size_diff <= 0.90 else 'FAIL'}")
+        if not skip_duration_check and size_diff > 0.90:
             return False, "size_mismatch", verbose_lines
 
     # STAGE 4: Audio fingerprint
@@ -194,6 +205,10 @@ LENGTH_TOLERANCE = 0.25          # 25% duration difference allowed (intros + cre
 #   - videos in 60s bucket compared with 60s, 120s, and 0s buckets
 DURATION_BUCKET_SIZE = 60       # seconds - bucket granularity
 DURATION_BUCKET_ADJACENT = 1   # number of adjacent buckets to check in each direction
+
+# Short/medium videos (< threshold) are compared against ALL videos (no bucketing)
+# This ensures short clips and compilations can match against long videos
+FORCE_COMPARE_THRESHOLD = 600  # 10 minutes
 
 # Audio sampling — longer windows (20 s) give the cross-correlation enough
 # shared content to detect an offset even when one video has a ~6-second intro.
@@ -766,16 +781,35 @@ def find_duplicate_groups_with_features(features_list: List[VideoFeatures], verb
     if n == 0:
         return []
 
-    duration_groups: Dict[int, List[VideoFeatures]] = defaultdict(list)
-    for f in features_list:
-        bucket = round(f.get("duration", 0) / DURATION_BUCKET_SIZE) * DURATION_BUCKET_SIZE
-        duration_groups[bucket].append(f)
-
     matches: Dict[str, Set[str]] = defaultdict(set)
     print(f"Analyzing {n} videos for duplicates (parallel comparisons)...")
 
     all_pairs = []
     added_pairs: Set[Tuple[str, str]] = set()
+
+    short_videos = [f for f in features_list if f.get("duration", 0) < FORCE_COMPARE_THRESHOLD]
+    long_videos = [f for f in features_list if f.get("duration", 0) >= FORCE_COMPARE_THRESHOLD]
+
+    print(f"Short videos (< {FORCE_COMPARE_THRESHOLD}s): {len(short_videos)}")
+    print(f"Long videos (>= {FORCE_COMPARE_THRESHOLD}s): {len(long_videos)}")
+
+    for i, f1 in enumerate(short_videos):
+        for f2 in short_videos[i + 1:]:
+            pair = tuple(sorted([f1["path"], f2["path"]]))
+            if pair not in added_pairs:
+                added_pairs.add(pair)
+                all_pairs.append((f1, f2))
+
+        for f2 in long_videos:
+            pair = tuple(sorted([f1["path"], f2["path"]]))
+            if pair not in added_pairs:
+                added_pairs.add(pair)
+                all_pairs.append((f1, f2))
+
+    duration_groups: Dict[int, List[VideoFeatures]] = defaultdict(list)
+    for f in long_videos:
+        bucket = round(f.get("duration", 0) / DURATION_BUCKET_SIZE) * DURATION_BUCKET_SIZE
+        duration_groups[bucket].append(f)
 
     all_buckets = sorted(duration_groups.keys())
 
