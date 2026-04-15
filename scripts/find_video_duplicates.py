@@ -729,10 +729,10 @@ def find_duplicate_groups(videos: List[Tuple[str, float]]) -> List[List[str]]:
                 completed += 1
                 if completed % 100 == 0:
                     pct = int(100 * completed / total_comparisons) if total_comparisons > 0 else 0
-                    print(f"Progress: {completed}/{total_comparisons} ({pct}%)")
+                    print(f"Progress: {completed}/{total_comparisons} ({pct}%)", flush=True)
 
     if total_comparisons > 0 and total_comparisons % 100 != 0:
-        print(f"Progress: {total_comparisons}/{total_comparisons} (100%)")
+        print(f"Progress: {total_comparisons}/{total_comparisons} (100%)", flush=True)
 
     visited: Set[str] = set()
     groups = []
@@ -825,13 +825,13 @@ def find_duplicate_groups_with_features(features_list: List[VideoFeatures], verb
                 completed += 1
                 if completed % 1000 == 0:
                     pct = int(100 * completed / total_pairs)
-                    print(f"Progress: {completed}/{total_pairs} ({pct}%)")
+                    print(f"Progress: {completed}/{total_pairs} ({pct}%)", flush=True)
 
             except Exception:
                 completed += 1
 
     if total_pairs % 1000 != 0:
-        print(f"Progress: {total_pairs}/{total_pairs} (100%)")
+        print(f"Progress: {total_pairs}/{total_pairs} (100%)", flush=True)
 
     for p1, p2 in comparison_results:
         matches[p1].add(p2)
@@ -1747,7 +1747,7 @@ def main() -> None:
                 }
                 if (idx + 1) % 10 == 0 or idx + 1 == total:
                     pct = int(100 * (idx + 1) / total)
-                    print(f"Upscaling analysis: {idx + 1}/{total} ({pct}%)")
+                    print(f"Upscaling analysis: {idx + 1}/{total} ({pct}%)", flush=True)
             upscaled_count = sum(1 for r in upscaling_results.values() if r["is_upscaled"])
             print(f"\nUpscaling: {upscaled_count} of {len(upscaling_results)} flagged")
             for path, result in upscaling_results.items():
@@ -1773,7 +1773,7 @@ def main() -> None:
                 completed += 1
                 if completed % 10 == 0 or completed == total:
                     pct = int(100 * completed / total)
-                    print(f"Extracting features: {completed}/{total} ({pct}%)")
+                    print(f"Extracting features: {completed}/{total} ({pct}%)", flush=True)
 
         if len(features_list) < 2:
             print("Not enough valid videos to compare")
