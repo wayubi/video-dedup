@@ -477,19 +477,19 @@ def compare_visual_fingerprints(hashes1: List[List[str]], hashes2: List[List[str
         hi = min(n2, i + max_offset + 1)
 
         if verbose:
-            verbose_lines.append(f"        Frame {i}: searching frames {lo} to {hi-1}")
+            verbose_lines.append(f"      Frame {i}: searching frames {lo} to {hi-1}")
 
         for j in range(lo, hi):
             current_sim = frame_similarity(regions1, hashes2[j])
             if verbose:
-                verbose_lines.append(f"          Frame {j}: similarity={current_sim:.4f}")
+                verbose_lines.append(f"        Frame {j}: similarity={current_sim:.4f}")
             if current_sim > best_frame_match:
                 best_frame_match = current_sim
                 best_frame_idx = j
 
         if verbose and best_frame_match >= VISUAL_FRAME_THRESHOLD:
             result = "PASS" if best_frame_match >= VISUAL_FRAME_THRESHOLD else "FAIL"
-            verbose_lines.append(f"            Best for frame {i}: frame {best_frame_idx} similarity={best_frame_match:.4f} (threshold={VISUAL_FRAME_THRESHOLD:.4f}, result={result})")
+            verbose_lines.append(f"          Best for frame {i}: frame {best_frame_idx} similarity={best_frame_match:.4f} (threshold={VISUAL_FRAME_THRESHOLD:.4f}, result={result})")
 
         if best_frame_match >= VISUAL_FRAME_THRESHOLD:
             best_count += 1
