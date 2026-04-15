@@ -94,22 +94,26 @@ def compare_features(f1: VideoFeatures, f2: VideoFeatures, verbose: bool = False
                 fp1_arr = np.array(fp1_list)
                 best_sim = 0.0
                 best_idx = -1
+                if verbose:
+                    verbose_lines.append(f"      Sample {i}: searching samples 0 to {len(fps2)-1}")
                 for j, fp2_list in enumerate(fps2):
                     fp2_arr = np.array(fp2_list)
                     sim = compare_audio_fingerprints(fp1_arr, fp2_arr)
                     if verbose:
-                        verbose_lines.append(f"      Sample {i} vs {j}: similarity={sim:.4f}")
+                        verbose_lines.append(f"        Sample {j}: similarity={sim:.4f}")
                     if sim > best_sim:
                         best_sim = sim
                         best_idx = j
                 if verbose:
-                    verbose_lines.append(f"        Best for sample {i}: sample {best_idx} similarity={best_sim:.4f} (threshold={AUDIO_THRESHOLD})")
+                    result = "PASS" if best_sim > AUDIO_THRESHOLD else "FAIL"
+                    verbose_lines.append(f"          Best for sample {i}: sample {best_idx} similarity={best_sim:.4f} (threshold={AUDIO_THRESHOLD}, result={result})")
                 if best_sim > AUDIO_THRESHOLD:
                     matches += 1
 
             required = max(1, round(AUDIO_MATCH_RATIO * NUM_AUDIO_SAMPLES))
+            audio_result = "PASS" if matches >= required else "FAIL"
             if verbose:
-                verbose_lines.append(f"      Audio: {matches}/{len(fps1)} matched, required={required}, threshold={AUDIO_THRESHOLD}")
+                verbose_lines.append(f"      Audio: {matches}/{len(fps1)} matched, required={required}, threshold={AUDIO_THRESHOLD} (result={audio_result})")
 
     # STAGE 5: Visual hash
     hashes1 = f1.get("visual_hashes", [])
@@ -122,8 +126,9 @@ def compare_features(f1: VideoFeatures, f2: VideoFeatures, verbose: bool = False
         verbose_lines.extend(visual_verbose_lines)
         matched_frames = int(visual_sim * len(hashes1))
         required = max(1, round(VISUAL_MATCH_RATIO * NUM_VISUAL_SAMPLES))
+        visual_result = "PASS" if visual_sim >= VISUAL_THRESHOLD else "FAIL"
         if verbose:
-            verbose_lines.append(f"      Visual: {matched_frames}/{len(hashes1)} matched, required={required}, threshold={VISUAL_THRESHOLD}")
+            verbose_lines.append(f"      Visual: {matched_frames}/{len(hashes1)} matched, required={required}, threshold={VISUAL_THRESHOLD} (result={visual_result})")
         if visual_sim >= VISUAL_THRESHOLD:
             return True, "visual_fingerprint", verbose_lines
 
@@ -466,19 +471,25 @@ def compare_visual_fingerprints(hashes1: List[List[str]], hashes2: List[List[str
     for i in range(n1):
         regions1 = hashes1[i]
         best_frame_match = 0.0
+        best_frame_idx = -1
 
         lo = max(0, i - max_offset)
         hi = min(n2, i + max_offset + 1)
 
         if verbose:
-            verbose_lines.append(f"        Frame {i}: searching offsets {lo} to {hi-1}")
+            verbose_lines.append(f"        Frame {i}: searching frames {lo} to {hi-1}")
 
         for j in range(lo, hi):
             current_sim = frame_similarity(regions1, hashes2[j])
             if verbose:
-                verbose_lines.append(f"          Offset {j-i}: similarity={current_sim:.4f}")
+                verbose_lines.append(f"          Frame {j}: similarity={current_sim:.4f}")
             if current_sim > best_frame_match:
                 best_frame_match = current_sim
+                best_frame_idx = j
+
+        if verbose:
+            result = "PASS" if best_frame_match > 0 else "FAIL"
+            verbose_lines.append(f"            Best for frame {i}: frame {best_frame_idx} similarity={best_frame_match:.4f} (result={result})")
 
         if best_frame_match > 0:
             best_count += 1
