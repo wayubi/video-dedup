@@ -84,13 +84,8 @@ def compare_features(f1: VideoFeatures, f2: VideoFeatures, verbose: bool = False
         fps1 = f1.get("audio_fingerprints", [])
         fps2 = f2.get("audio_fingerprints", [])
 
-        if verbose:
-            has_fps1 = len(fps1) > 0
-            has_fps2 = len(fps2) > 0
-            print(f"    Stage 4 (Audio): has_audio=true, fps1={has_fps1}, fps2={has_fps2}")
-
         if fps1 and fps2:
-            print(f"    Stage 4 (Audio): {len(fps1)} samples from each video, comparing all pairs...")
+            print(f"    Stage 4 (Audio): {len(fps1)} samples from each video, max_offset={MAX_AUDIO_OFFSET_SECONDS}s")
             matches = 0
             for i, fp1_list in enumerate(fps1):
                 fp1_arr = np.array(fp1_list)
@@ -99,34 +94,29 @@ def compare_features(f1: VideoFeatures, f2: VideoFeatures, verbose: bool = False
                 for j, fp2_list in enumerate(fps2):
                     fp2_arr = np.array(fp2_list)
                     sim = compare_audio_fingerprints(fp1_arr, fp2_arr)
-                    print(f"      Sample {i} vs {j}: similarity={sim:.4f}")
+                    if verbose:
+                        print(f"      Sample {i} vs {j}: similarity={sim:.4f}")
                     if sim > best_sim:
                         best_sim = sim
                         best_idx = j
-                print(f"        Best for sample {i}: sample {best_idx} with similarity={best_sim:.4f} (threshold={AUDIO_THRESHOLD})")
+                if verbose:
+                    print(f"        Best for sample {i}: sample {best_idx} similarity={best_sim:.4f} (threshold={AUDIO_THRESHOLD})")
                 if best_sim > AUDIO_THRESHOLD:
                     matches += 1
 
             required = max(1, round(AUDIO_MATCH_RATIO * NUM_AUDIO_SAMPLES))
-            if verbose:
-                print(f"      Audio matches: {matches}/{len(fps1)} (required={required})")
-            if matches >= required:
-                return True, "audio_fingerprint"
+            print(f"      Audio: {matches}/{len(fps1)} matched, required={required}, threshold={AUDIO_THRESHOLD}")
 
     # STAGE 5: Visual hash
     hashes1 = f1.get("visual_hashes", [])
     hashes2 = f2.get("visual_hashes", [])
 
-    if verbose:
-        print(f"    Stage 5 (Visual): hashes1={len(hashes1)} frames, hashes2={len(hashes2)} frames")
-
     if hashes1 and hashes2:
-        if verbose:
-            print(f"      Visual: {len(hashes1)} frames with max_offset={MAX_VISUAL_OFFSET}")
+        print(f"    Stage 5 (Visual): {len(hashes1)} frames with max_offset={MAX_VISUAL_OFFSET}")
         visual_sim = compare_visual_fingerprints(hashes1, hashes2, MAX_VISUAL_OFFSET, verbose)
-        if verbose:
-            matched_frames = int(visual_sim * len(hashes1))
-            print(f"      Visual similarity: {visual_sim:.4f} ({matched_frames}/{len(hashes1)} matched, required={max(1, round(VISUAL_MATCH_RATIO * NUM_VISUAL_SAMPLES))}), threshold={VISUAL_THRESHOLD}")
+        matched_frames = int(visual_sim * len(hashes1))
+        required = max(1, round(VISUAL_MATCH_RATIO * NUM_VISUAL_SAMPLES))
+        print(f"      Visual: {matched_frames}/{len(hashes1)} matched, required={required}, threshold={VISUAL_THRESHOLD}")
         if visual_sim >= VISUAL_THRESHOLD:
             return True, "visual_fingerprint"
 
@@ -1324,7 +1314,7 @@ def analyze_duplicate_set(videos_with_metadata: List[Tuple[str, Dict]]) -> Dict[
         score, reason = calculate_quality_score(metadata)
         results[video_path] = {
             "metadata": metadata, "quality_score": score, "quality_reason": reason,
-            "recommendation": "DELETE_CANDIDATE", "reason": "", "better_alternative": None,
+            "recommendation": "DELETE", "reason": "", "better_alternative": None,
         }
 
     if len(results) == 1:
@@ -1379,7 +1369,7 @@ def analyze_duplicate_set(videos_with_metadata: List[Tuple[str, Dict]]) -> Dict[
         if v_brate < best_bitrate * 0.7 and v_brate > 0:
             reason += f"; lower bitrate ({v_brate} vs {best_bitrate} kbps)"
 
-        result["recommendation"] = "DELETE_CANDIDATE"
+        result["recommendation"] = "DELETE"
         result["reason"] = reason
         result["better_alternative"] = {
             "filename": os.path.basename(best_path),
@@ -1450,7 +1440,7 @@ def organize_duplicates(
                         "modification_time": metadata.get("file_info", {}).get("modification_time", 0),
                         **metadata,
                     }
-                    if analysis.get("recommendation") == "DELETE_CANDIDATE":
+                    if analysis.get("recommendation") == "DELETE":
                         json_data["better_alternative"] = analysis.get("better_alternative")
 
                     json_filename = f"{os.path.basename(dest_path)}.json"
@@ -1459,7 +1449,7 @@ def organize_duplicates(
 
                     if create_markers:
                         rec = analysis.get("recommendation", "")
-                        ext_marker = ".keep" if rec == "KEEP" else ".delete" if rec == "DELETE_CANDIDATE" else None
+                        ext_marker = ".keep" if rec == "KEEP" else ".delete" if rec == "DELETE" else None
                         if ext_marker:
                             open(os.path.join(folder_path,
                                               f"{os.path.basename(dest_path)}{ext_marker}"), 'w').close()
