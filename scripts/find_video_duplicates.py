@@ -161,10 +161,10 @@ def compare_features(f1: VideoFeatures, f2: VideoFeatures, verbose: bool = False
         verbose_lines.extend(visual_verbose_lines)
         matched_frames = int(visual_sim * len(hashes1))
         required = max(1, round(VISUAL_MATCH_RATIO * NUM_VISUAL_ANCHORS))
-        visual_result = "PASS" if visual_sim >= VISUAL_THRESHOLD else "FAIL"
+        visual_result = "PASS" if matched_frames >= required else "FAIL"
         if verbose:
             verbose_lines.append(f"      Visual: {matched_frames}/{len(hashes1)} anchors matched, required={required}, threshold={VISUAL_THRESHOLD} (result={visual_result})")
-        if visual_sim >= VISUAL_THRESHOLD:
+        if matched_frames >= required:
             return True, "visual_fingerprint", verbose_lines
 
     return False, "no_match", verbose_lines
