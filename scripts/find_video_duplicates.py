@@ -177,8 +177,10 @@ MAX_VISUAL_OFFSET = 3  # For visual offset search (±3 frame positions)
 # - threshold: similarity (0.0-1.0) for overall visual similarity
 # - ratio: required matches = VISUAL_MATCH_RATIO * NUM_VISUAL_SAMPLES
 # - example: 0.25 * 7 = 1.75 → requires 2 frames (~29%)
+# - frame_threshold: minimum matching regions (3 out of 9) for a frame to count as matched
 VISUAL_THRESHOLD = 0.25
 VISUAL_MATCH_RATIO = 0.25
+VISUAL_FRAME_THRESHOLD = 3 / 9  # 3 of 9 regions must match
 
 # AUDIO MATCHING CONFIGURATION
 # - threshold: similarity (0.0-1.0) - per-sample similarity required
@@ -458,13 +460,11 @@ def compare_visual_fingerprints(hashes1: List[List[str]], hashes2: List[List[str
         if not h1 or not h2:
             return 0.0
         region_matches = 0
-        dists = []
         for r1, r2 in zip(h1, h2):
             dist = hamming_distance(r1, r2)
-            dists.append(dist)
             if dist <= threshold_match:
                 region_matches += 1
-        return 1.0 if region_matches >= 3 else 0.0
+        return region_matches / 9.0
 
     best_count = 0
 
@@ -487,11 +487,11 @@ def compare_visual_fingerprints(hashes1: List[List[str]], hashes2: List[List[str
                 best_frame_match = current_sim
                 best_frame_idx = j
 
-        if verbose:
-            result = "PASS" if best_frame_match > 0 else "FAIL"
-            verbose_lines.append(f"            Best for frame {i}: frame {best_frame_idx} similarity={best_frame_match:.4f} (result={result})")
+        if verbose and best_frame_match >= VISUAL_FRAME_THRESHOLD:
+            result = "PASS" if best_frame_match >= VISUAL_FRAME_THRESHOLD else "FAIL"
+            verbose_lines.append(f"            Best for frame {i}: frame {best_frame_idx} similarity={best_frame_match:.4f} (threshold={VISUAL_FRAME_THRESHOLD:.4f}, result={result})")
 
-        if best_frame_match > 0:
+        if best_frame_match >= VISUAL_FRAME_THRESHOLD:
             best_count += 1
 
     return best_count / max(n1, n2), verbose_lines
