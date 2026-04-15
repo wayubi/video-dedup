@@ -90,19 +90,24 @@ def compare_features(f1: VideoFeatures, f2: VideoFeatures, verbose: bool = False
             print(f"    Stage 4 (Audio): has_audio=true, fps1={has_fps1}, fps2={has_fps2}")
 
         if fps1 and fps2:
+            print(f"    Stage 4 (Audio): {len(fps1)} samples from each video, comparing all pairs...")
             matches = 0
-            for fp1_list in fps1:
+            for i, fp1_list in enumerate(fps1):
                 fp1_arr = np.array(fp1_list)
                 best_sim = 0.0
-                for fp2_list in fps2:
+                best_idx = -1
+                for j, fp2_list in enumerate(fps2):
                     fp2_arr = np.array(fp2_list)
                     sim = compare_audio_fingerprints(fp1_arr, fp2_arr)
+                    print(f"      Sample {i} vs {j}: similarity={sim:.4f}")
                     if sim > best_sim:
                         best_sim = sim
-                if best_sim > 0.90:
+                        best_idx = j
+                print(f"        Best for sample {i}: sample {best_idx} with similarity={best_sim:.4f} (threshold=0.75)")
+                if best_sim > 0.75:
                     matches += 1
 
-            required = max(1, len(fps1) - 1)
+            required = max(1, len(fps1) // 2)  # Require ~50% match
             if verbose:
                 print(f"      Audio matches: {matches}/{len(fps1)} (required={required})")
             if matches >= required:
@@ -141,8 +146,8 @@ LENGTH_TOLERANCE = 0.25          # 25% duration difference allowed (intros + cre
 # Audio sampling — longer windows (20 s) give the cross-correlation enough
 # shared content to detect an offset even when one video has a ~6-second intro.
 # 3 × 20 s = 60 s of audio analysed per video, spread across the file.
-AUDIO_SAMPLE_DURATION = 20       # seconds per audio sample (was 5)
-NUM_AUDIO_SAMPLES = 3            # number of samples (was 4)
+AUDIO_SAMPLE_DURATION = 10       # seconds per sample
+NUM_AUDIO_SAMPLES = 7           # number of samples (matched with visual)
 
 # Maximum intro / offset length we try to compensate for.
 # Cross-correlation will search for alignment within ±this many seconds.
@@ -956,15 +961,10 @@ def extract_all_features(video_path: str, temp_dir: Optional[str] = None) -> Vid
 
     if features["has_audio"]:
         sample_starts: List[float] = []
-        if duration > SKIP_FIRST_SECONDS + AUDIO_SAMPLE_DURATION:
-            available = duration - SKIP_FIRST_SECONDS - AUDIO_SAMPLE_DURATION
-            for i in range(NUM_AUDIO_SAMPLES):
-                start = SKIP_FIRST_SECONDS + (available * i / max(NUM_AUDIO_SAMPLES - 1, 1))
-                sample_starts.append(start)
-        else:
-            sample_starts = [max(0, duration / 2 - AUDIO_SAMPLE_DURATION / 2)]
-
-        for start in sample_starts:
+        # Use same percentage-based formula as visual samples: 5% to 95%
+        points = [(i + 0.5) / NUM_AUDIO_SAMPLES * 0.9 + 0.05 for i in range(NUM_AUDIO_SAMPLES)]
+        for i in range(NUM_AUDIO_SAMPLES):
+            start = points[i] * duration
             audio_data = extract_audio_sample(video_path, start, AUDIO_SAMPLE_DURATION)
             if audio_data is not None:
                 fp = generate_audio_fingerprint(audio_data)
