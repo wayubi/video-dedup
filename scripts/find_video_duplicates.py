@@ -137,6 +137,14 @@ VIDEO_EXTENSIONS = {'.mp4', '.mkv', '.avi', '.mov', '.webm'}
 # ---------------------------------------------------------------------------
 LENGTH_TOLERANCE = 0.25          # 25% duration difference allowed (intros + credits)
 
+# Duration bucket configuration for grouping videos by length
+# - BUCKET_SIZE: videos with similar durations are grouped into buckets
+# - BUCKET_ADJACENT: number of adjacent buckets to compare (±direction)
+# Example: bucket_size=60, bucket_adjacent=1 means:
+#   - videos in 60s bucket compared with 60s, 120s, and 0s buckets
+DURATION_BUCKET_SIZE = 60       # seconds - bucket granularity
+DURATION_BUCKET_ADJACENT = 1   # number of adjacent buckets to check in each direction
+
 # Audio sampling — longer windows (20 s) give the cross-correlation enough
 # shared content to detect an offset even when one video has a ~6-second intro.
 # 3 × 20 s = 60 s of audio analysed per video, spread across the file.
@@ -168,7 +176,7 @@ VISUAL_MATCH_RATIO = 0.25
 # - threshold: similarity (0.0-1.0) - per-sample similarity required
 # - ratio: required matches = AUDIO_MATCH_RATIO * NUM_AUDIO_SAMPLES
 # - example: 0.4 * 7 = 2.8 → requires 3 frames (~43%)
-AUDIO_THRESHOLD = 0.75
+AUDIO_THRESHOLD = 0.65
 AUDIO_MATCH_RATIO = 0.4
 
 TEMP_DIR = None
@@ -658,7 +666,7 @@ def find_duplicate_groups_with_features(features_list: List[VideoFeatures], verb
 
     duration_groups: Dict[int, List[VideoFeatures]] = defaultdict(list)
     for f in features_list:
-        bucket = round(f.get("duration", 0) / 30) * 30
+        bucket = round(f.get("duration", 0) / DURATION_BUCKET_SIZE) * DURATION_BUCKET_SIZE
         duration_groups[bucket].append(f)
 
     matches: Dict[str, Set[str]] = defaultdict(set)
@@ -681,14 +689,17 @@ def find_duplicate_groups_with_features(features_list: List[VideoFeatures], verb
                         added_pairs.add(pair)
                         all_pairs.append((bucket_features[i], bucket_features[j]))
 
-        adj_bucket = bucket + 30
-        if adj_bucket in duration_groups:
-            for f1 in bucket_features:
-                for f2 in duration_groups[adj_bucket]:
-                    pair = tuple(sorted([f1["path"], f2["path"]]))
-                    if pair not in added_pairs:
-                        added_pairs.add(pair)
-                        all_pairs.append((f1, f2))
+        for offset in range(-DURATION_BUCKET_ADJACENT, DURATION_BUCKET_ADJACENT + 1):
+            if offset == 0:
+                continue
+            adj_bucket = bucket + (offset * DURATION_BUCKET_SIZE)
+            if adj_bucket in duration_groups:
+                for f1 in bucket_features:
+                    for f2 in duration_groups[adj_bucket]:
+                        pair = tuple(sorted([f1["path"], f2["path"]]))
+                        if pair not in added_pairs:
+                            added_pairs.add(pair)
+                            all_pairs.append((f1, f2))
 
     if not all_pairs:
         return []
