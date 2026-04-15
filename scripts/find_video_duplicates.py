@@ -154,6 +154,8 @@ def compare_features(f1: VideoFeatures, f2: VideoFeatures, verbose: bool = False
             audio_result = "PASS" if matches >= required else "FAIL"
             if verbose:
                 verbose_lines.append(f"      Audio: {matches}/{num_anchors} anchors matched, required={required}, threshold={AUDIO_THRESHOLD} (result={audio_result})")
+            if matches >= required:
+                return True, "audio_fingerprint", verbose_lines
 
     # STAGE 5: Visual hash
     hashes1 = f1.get("visual_hashes", [])
@@ -168,7 +170,7 @@ def compare_features(f1: VideoFeatures, f2: VideoFeatures, verbose: bool = False
         required = max(1, VISUAL_REQUIRED_MATCHES)
         visual_result = "PASS" if matched_frames >= required else "FAIL"
         if verbose:
-            verbose_lines.append(f"      Visual: {matched_frames}/{len(hashes1)} anchors matched, required={required}, threshold={VISUAL_THRESHOLD} (result={visual_result})")
+            verbose_lines.append(f"      Visual: {matched_frames}/{len(hashes1)} anchors matched, required={required} (result={visual_result})")
         if matched_frames >= required:
             return True, "visual_fingerprint", verbose_lines
 
@@ -218,17 +220,15 @@ SKIP_FIRST_SECONDS = 10
 VISUAL_CLUSTER_SECONDS = 10    # seconds before/after anchor to capture
 
 # VISUAL MATCHING CONFIGURATION
-# - threshold: similarity (0.0-1.0) for overall visual similarity
 # - required: minimum number of anchor clusters that must match
 # - frame_threshold: minimum matching regions (3 out of 9) for a frame to count as matched
-VISUAL_THRESHOLD = 0.25
 VISUAL_REQUIRED_MATCHES = 1  # must be <= NUM_VISUAL_ANCHORS
 VISUAL_FRAME_THRESHOLD = 3 / 9  # 3 of 9 regions must match
 
 # AUDIO MATCHING CONFIGURATION
 # - threshold: similarity (0.0-1.0) - per-sample similarity required
 # - required: minimum number of anchor clusters that must match
-AUDIO_THRESHOLD = 0.8
+AUDIO_THRESHOLD = 0.95
 AUDIO_REQUIRED_MATCHES = 1  # must be <= NUM_AUDIO_ANCHORS
 
 # Short video handling (< 120 seconds)
