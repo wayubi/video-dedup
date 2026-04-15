@@ -732,7 +732,7 @@ def find_duplicate_groups_with_features(features_list: List[VideoFeatures], verb
                 f1, f2 = futures[future]
                 is_dup, _, verbose_lines = future.result()
 
-                print(f"Comparing: {os.path.basename(f1['path'])} vs {os.path.basename(f2['path'])}")
+                # print(f"Comparing: {os.path.basename(f1['path'])} vs {os.path.basename(f2['path'])}")
                 for line in verbose_lines:
                     print(line)
 
