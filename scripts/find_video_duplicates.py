@@ -32,6 +32,11 @@ VideoFeatures = Dict[str, Any]
 
 def compare_features(f1: VideoFeatures, f2: VideoFeatures, verbose: bool = False) -> Tuple[bool, str, List[str]]:
     """Compare two videos using precomputed features with multi-stage filtering."""
+    if AUDIO_REQUIRED_MATCHES > NUM_AUDIO_ANCHORS:
+        print(f"Error: AUDIO_REQUIRED_MATCHES ({AUDIO_REQUIRED_MATCHES}) > NUM_AUDIO_ANCHORS ({NUM_AUDIO_ANCHORS})")
+    if VISUAL_REQUIRED_MATCHES > NUM_VISUAL_ANCHORS:
+        print(f"Error: VISUAL_REQUIRED_MATCHES ({VISUAL_REQUIRED_MATCHES}) > NUM_VISUAL_ANCHORS ({NUM_VISUAL_ANCHORS})")
+
     v1_name = os.path.basename(f1.get("path", ""))
     v2_name = os.path.basename(f2.get("path", ""))
     dur1, dur2 = f1.get("duration", 0), f2.get("duration", 0)
@@ -145,7 +150,7 @@ def compare_features(f1: VideoFeatures, f2: VideoFeatures, verbose: bool = False
                 if best_cluster_sim > AUDIO_THRESHOLD:
                     matches += 1
 
-            required = max(1, round(AUDIO_MATCH_RATIO * NUM_AUDIO_ANCHORS))
+            required = max(1, AUDIO_REQUIRED_MATCHES)
             audio_result = "PASS" if matches >= required else "FAIL"
             if verbose:
                 verbose_lines.append(f"      Audio: {matches}/{num_anchors} anchors matched, required={required}, threshold={AUDIO_THRESHOLD} (result={audio_result})")
@@ -160,7 +165,7 @@ def compare_features(f1: VideoFeatures, f2: VideoFeatures, verbose: bool = False
         visual_sim, visual_verbose_lines = compare_visual_fingerprints(hashes1, hashes2, verbose)
         verbose_lines.extend(visual_verbose_lines)
         matched_frames = int(visual_sim * len(hashes1))
-        required = max(1, round(VISUAL_MATCH_RATIO * NUM_VISUAL_ANCHORS))
+        required = max(1, VISUAL_REQUIRED_MATCHES)
         visual_result = "PASS" if matched_frames >= required else "FAIL"
         if verbose:
             verbose_lines.append(f"      Visual: {matched_frames}/{len(hashes1)} anchors matched, required={required}, threshold={VISUAL_THRESHOLD} (result={visual_result})")
@@ -214,17 +219,17 @@ VISUAL_CLUSTER_SECONDS = 10    # seconds before/after anchor to capture
 
 # VISUAL MATCHING CONFIGURATION
 # - threshold: similarity (0.0-1.0) for overall visual similarity
-# - ratio: required matches = VISUAL_MATCH_RATIO * NUM_VISUAL_ANCHORS
+# - required: minimum number of anchor clusters that must match
 # - frame_threshold: minimum matching regions (3 out of 9) for a frame to count as matched
 VISUAL_THRESHOLD = 0.25
-VISUAL_MATCH_RATIO = 0.25
+VISUAL_REQUIRED_MATCHES = 1  # must be <= NUM_VISUAL_ANCHORS
 VISUAL_FRAME_THRESHOLD = 3 / 9  # 3 of 9 regions must match
 
 # AUDIO MATCHING CONFIGURATION
 # - threshold: similarity (0.0-1.0) - per-sample similarity required
-# - ratio: required matches = AUDIO_MATCH_RATIO * NUM_AUDIO_ANCHORS
+# - required: minimum number of anchor clusters that must match
 AUDIO_THRESHOLD = 0.8
-AUDIO_MATCH_RATIO = 0.25
+AUDIO_REQUIRED_MATCHES = 1  # must be <= NUM_AUDIO_ANCHORS
 
 # Short video handling (< 120 seconds)
 SHORT_VIDEO_THRESHOLD = 120
