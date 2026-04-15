@@ -88,32 +88,67 @@ def compare_features(f1: VideoFeatures, f2: VideoFeatures, verbose: bool = False
 
         if fps1 and fps2:
             if verbose:
-                verbose_lines.append(f"    Stage 4 (Audio): {len(fps1)} samples from each video, max_offset={MAX_AUDIO_OFFSET_SECONDS}s")
-            matches = 0
-            for i, fp1_list in enumerate(fps1):
-                fp1_arr = np.array(fp1_list)
+                verbose_lines.append(f"    Stage 4 (Audio): {len(fps1)} anchor clusters")
+
+            def compare_audio_clusters(cluster1: List[Tuple[float, List[float]]], cluster2: List[Tuple[float, List[float]]]) -> Tuple[float, int, int]:
+                """Compare two audio clusters, return (best_similarity, best_idx1, best_idx2)."""
                 best_sim = 0.0
-                best_idx = 0
+                best_i, best_j = 0, 0
+                for i, (ts1, fp1_list) in enumerate(cluster1):
+                    for j, (ts2, fp2_list) in enumerate(cluster2):
+                        fp1_arr = np.array(fp1_list)
+                        fp2_arr = np.array(fp2_list)
+                        sim = compare_audio_fingerprints(fp1_arr, fp2_arr)
+                        if sim > best_sim:
+                            best_sim = sim
+                            best_i, best_j = i, j
+                return best_sim, best_i, best_j
+
+            matches = 0
+            num_anchors = min(len(fps1), len(fps2))
+
+            for anchor_idx in range(num_anchors):
+                cluster1 = fps1[anchor_idx]
+                anchor_ts = cluster1[0][0] if cluster1 else 0
+
+                # Find best matching cluster in video2
+                best_cluster_sim = 0.0
+                best_cluster_idx = anchor_idx
+                best_i_in_cluster, best_j_in_cluster = 0, 0
+
+                # Search within ±3 anchors
+                lo = max(0, anchor_idx - 3)
+                hi = min(len(fps2), anchor_idx + 4)
+
+                for other_anchor_idx in range(lo, hi):
+                    cluster2 = fps2[other_anchor_idx]
+                    sim, i_in_cluster, j_in_cluster = compare_audio_clusters(cluster1, cluster2)
+                    if sim > best_cluster_sim:
+                        best_cluster_sim = sim
+                        best_cluster_idx = other_anchor_idx
+                        best_i_in_cluster, best_j_in_cluster = i_in_cluster, j_in_cluster
+
+                # Verbose output for this anchor
                 if verbose:
-                    verbose_lines.append(f"      Sample {i}: searching samples 0 to {len(fps2)-1}")
-                for j, fp2_list in enumerate(fps2):
-                    fp2_arr = np.array(fp2_list)
-                    sim = compare_audio_fingerprints(fp1_arr, fp2_arr)
-                    if verbose:
-                        verbose_lines.append(f"        Sample {j}: similarity={sim:.4f}")
-                    if sim > best_sim:
-                        best_sim = sim
-                        best_idx = j
-                if verbose:
-                    result = "PASS" if best_sim > AUDIO_THRESHOLD else "FAIL"
-                    verbose_lines.append(f"          Best for sample {i}: sample {best_idx} similarity={best_sim:.4f} (threshold={AUDIO_THRESHOLD}, result={result})")
-                if best_sim > AUDIO_THRESHOLD:
+                    verbose_lines.append(f"      Sample {anchor_idx}: anchor={anchor_ts:.1f}s")
+                    # Show all comparisons within the winning cluster
+                    for i, (ts1, fp1_list) in enumerate(cluster1):
+                        for j, (ts2, fp2_list) in enumerate(fps2[best_cluster_idx]):
+                            fp1_arr = np.array(fp1_list)
+                            fp2_arr = np.array(fp2_list)
+                            sim = compare_audio_fingerprints(fp1_arr, fp2_arr)
+                            verbose_lines.append(f"        Sample {i}a: ts={ts1:.1f}s vs Sample {j}a: ts={ts2:.1f}s: similarity={sim:.4f}")
+                    best_ts = fps2[best_cluster_idx][best_j_in_cluster][0] if fps2[best_cluster_idx] else 0
+                    result = "PASS" if best_cluster_sim > AUDIO_THRESHOLD else "FAIL"
+                    verbose_lines.append(f"        Best for sample {anchor_idx}: sample {best_j_in_cluster}a ts={best_ts:.1f}s similarity={best_cluster_sim:.4f} (threshold={AUDIO_THRESHOLD}, result={result})")
+
+                if best_cluster_sim > AUDIO_THRESHOLD:
                     matches += 1
 
-            required = max(1, round(AUDIO_MATCH_RATIO * NUM_AUDIO_SAMPLES))
+            required = max(1, round(AUDIO_MATCH_RATIO * NUM_AUDIO_ANCHORS))
             audio_result = "PASS" if matches >= required else "FAIL"
             if verbose:
-                verbose_lines.append(f"      Audio: {matches}/{len(fps1)} matched, required={required}, threshold={AUDIO_THRESHOLD} (result={audio_result})")
+                verbose_lines.append(f"      Audio: {matches}/{num_anchors} anchors matched, required={required}, threshold={AUDIO_THRESHOLD} (result={audio_result})")
 
     # STAGE 5: Visual hash
     hashes1 = f1.get("visual_hashes", [])
@@ -121,14 +156,14 @@ def compare_features(f1: VideoFeatures, f2: VideoFeatures, verbose: bool = False
 
     if hashes1 and hashes2:
         if verbose:
-            verbose_lines.append(f"    Stage 5 (Visual): {len(hashes1)} frames with max_offset={MAX_VISUAL_OFFSET}")
-        visual_sim, visual_verbose_lines = compare_visual_fingerprints(hashes1, hashes2, MAX_VISUAL_OFFSET, verbose)
+            verbose_lines.append(f"    Stage 5 (Visual): {len(hashes1)} anchor clusters")
+        visual_sim, visual_verbose_lines = compare_visual_fingerprints(hashes1, hashes2, verbose)
         verbose_lines.extend(visual_verbose_lines)
         matched_frames = int(visual_sim * len(hashes1))
-        required = max(1, round(VISUAL_MATCH_RATIO * NUM_VISUAL_SAMPLES))
+        required = max(1, round(VISUAL_MATCH_RATIO * NUM_VISUAL_ANCHORS))
         visual_result = "PASS" if visual_sim >= VISUAL_THRESHOLD else "FAIL"
         if verbose:
-            verbose_lines.append(f"      Visual: {matched_frames}/{len(hashes1)} matched, required={required}, threshold={VISUAL_THRESHOLD} (result={visual_result})")
+            verbose_lines.append(f"      Visual: {matched_frames}/{len(hashes1)} anchors matched, required={required}, threshold={VISUAL_THRESHOLD} (result={visual_result})")
         if visual_sim >= VISUAL_THRESHOLD:
             return True, "visual_fingerprint", verbose_lines
 
@@ -157,7 +192,11 @@ DURATION_BUCKET_ADJACENT = 1   # number of adjacent buckets to check in each dir
 # shared content to detect an offset even when one video has a ~6-second intro.
 # 3 × 20 s = 60 s of audio analysed per video, spread across the file.
 AUDIO_SAMPLE_DURATION = 10       # seconds per sample
-NUM_AUDIO_SAMPLES = 7           # number of samples (matched with visual)
+NUM_AUDIO_ANCHORS = 5          # number of anchor points for clustering
+
+# Cluster configuration - samples captured around each anchor point
+# to handle videos with intros (e.g., 10 seconds of intro = 10 seconds before main content)
+AUDIO_CLUSTER_SECONDS = 10      # seconds before/after anchor to capture
 
 # Maximum intro / offset length we try to compensate for.
 # Cross-correlation will search for alignment within ±this many seconds.
@@ -169,14 +208,13 @@ MAX_AUDIO_OFFSET_SECONDS = 30
 # 6 frequency bands → 6.25 × 6 = 37.5 fingerprint values/s
 _FP_VALUES_PER_SECOND = 37.5
 
-NUM_VISUAL_SAMPLES = 7
+NUM_VISUAL_ANCHORS = 5         # number of anchor points for clustering
 SKIP_FIRST_SECONDS = 10
-MAX_VISUAL_OFFSET = 3  # For visual offset search (±3 frame positions)
+VISUAL_CLUSTER_SECONDS = 10    # seconds before/after anchor to capture
 
 # VISUAL MATCHING CONFIGURATION
 # - threshold: similarity (0.0-1.0) for overall visual similarity
-# - ratio: required matches = VISUAL_MATCH_RATIO * NUM_VISUAL_SAMPLES
-# - example: 0.25 * 7 = 1.75 → requires 2 frames (~29%)
+# - ratio: required matches = VISUAL_MATCH_RATIO * NUM_VISUAL_ANCHORS
 # - frame_threshold: minimum matching regions (3 out of 9) for a frame to count as matched
 VISUAL_THRESHOLD = 0.25
 VISUAL_MATCH_RATIO = 0.25
@@ -184,10 +222,14 @@ VISUAL_FRAME_THRESHOLD = 3 / 9  # 3 of 9 regions must match
 
 # AUDIO MATCHING CONFIGURATION
 # - threshold: similarity (0.0-1.0) - per-sample similarity required
-# - ratio: required matches = AUDIO_MATCH_RATIO * NUM_AUDIO_SAMPLES
-# - example: 0.4 * 7 = 2.8 → requires 3 frames (~43%)
+# - ratio: required matches = AUDIO_MATCH_RATIO * NUM_AUDIO_ANCHORS
 AUDIO_THRESHOLD = 0.8
 AUDIO_MATCH_RATIO = 0.25
+
+# Short video handling (< 120 seconds)
+SHORT_VIDEO_THRESHOLD = 120
+SHORT_SKIP_FIRST = 0
+SHORT_CLUSTER_SECONDS = 5    # smaller cluster for short videos
 
 TEMP_DIR = None
 
@@ -383,8 +425,8 @@ def extract_visual_samples(video_path: str, duration: float) -> List[Image.Image
     if TEMP_DIR is None:
         return []
     images = []
-    # 15 evenly distributed points from 5% to 95% (skip 5% at each end)
-    points = [(i + 0.5) / NUM_VISUAL_SAMPLES * 0.9 + 0.05 for i in range(NUM_VISUAL_SAMPLES)]
+    # evenly distributed points from 5% to 95% (skip 5% at each end)
+    points = [(i + 0.5) / NUM_VISUAL_ANCHORS * 0.9 + 0.05 for i in range(NUM_VISUAL_ANCHORS)]
     for point in points:
         timestamp = duration * point
         try:
@@ -402,27 +444,35 @@ def extract_visual_samples(video_path: str, duration: float) -> List[Image.Image
     return images
 
 
-def generate_visual_fingerprint(images: List[Image.Image]) -> List[List[str]]:
-    """Generate region-based perceptual hashes per frame (3x3 grid)."""
-    hashes = []
-    for img in images:
-        try:
-            if img.mode != 'RGB':
-                img = img.convert('RGB')
-            w, h = img.size
-            region_hashes = []
-            for row in range(3):
-                y1 = int(h * row / 3)
-                y2 = int(h * (row + 1) / 3)
-                for col in range(3):
-                    x1 = int(w * col / 3)
-                    x2 = int(w * (col + 1) / 3)
-                    region = img.crop((x1, y1, x2, y2))
-                    region_hashes.append(str(imagehash.phash(region)))
-            hashes.append(region_hashes)
-        except Exception:
-            pass
-    return hashes
+def generate_visual_fingerprint(clusters: List[List[Tuple[float, Image.Image]]]) -> List[List[Tuple[float, List[str]]]]:
+    """Generate region-based perceptual hashes per frame (3x3 grid).
+    
+    Input: List of clusters, each cluster contains (timestamp, image) tuples.
+    Output: List of clusters, each cluster contains (timestamp, region hashes) tuples.
+    """
+    result: List[List[Tuple[float, List[str]]]] = []
+    for cluster in clusters:
+        cluster_hashes: List[Tuple[float, List[str]]] = []
+        for timestamp, img in cluster:
+            try:
+                if img.mode != 'RGB':
+                    img = img.convert('RGB')
+                w, h = img.size
+                region_hashes = []
+                for row in range(3):
+                    y1 = int(h * row / 3)
+                    y2 = int(h * (row + 1) / 3)
+                    for col in range(3):
+                        x1 = int(w * col / 3)
+                        x2 = int(w * (col + 1) / 3)
+                        region = img.crop((x1, y1, x2, y2))
+                        region_hashes.append(str(imagehash.phash(region)))
+                cluster_hashes.append((timestamp, region_hashes))
+            except Exception:
+                pass
+        if cluster_hashes:
+            result.append(cluster_hashes)
+    return result
 
 
 def hamming_distance(hash1: str, hash2: str) -> int:
@@ -434,16 +484,15 @@ def hamming_distance(hash1: str, hash2: str) -> int:
     return sum(c1 != c2 for c1, c2 in zip(bin1, bin2))
 
 
-def compare_visual_fingerprints(hashes1: List[List[str]], hashes2: List[List[str]], max_offset: int = 1, verbose: bool = False) -> Tuple[float, List[str]]:
+def compare_visual_fingerprints(hashes1: List[List[Tuple[float, List[str]]]], hashes2: List[List[Tuple[float, List[str]]]], verbose: bool = False) -> Tuple[float, List[str]]:
     """
-    Compare visual fingerprints and return similarity (0-1) and verbose lines.
-    Each frame has 9 regions (3x3 grid). A frame is "good" if at least 5 of 9
-    regions match (distance <= 9), allowing for 1-2 regions with watermarks
-    or other differences.
-
-    Uses sliding window offset search to handle videos where one has an intro
-    that shifts the content. For each frame position, searches within ±max_offset
-    positions for the best match.
+    Compare visual fingerprints using cluster-based matching.
+    
+    Each video has clusters of frames (anchor, ±offset).
+    For each anchor in video1, compare against all frames in the corresponding 
+    anchor cluster in video2. If any frame pair matches, the anchor is considered matched.
+    
+    Returns (similarity, verbose_lines).
     """
     verbose_lines: List[str] = []
 
@@ -466,33 +515,55 @@ def compare_visual_fingerprints(hashes1: List[List[str]], hashes2: List[List[str
                 region_matches += 1
         return region_matches / 9.0
 
+    def compare_clusters(cluster1: List[Tuple[float, List[str]]], cluster2: List[Tuple[float, List[str]]]) -> Tuple[float, int, int]:
+        """Compare two clusters, return (best_similarity, best_idx1, best_idx2)."""
+        best_sim = 0.0
+        best_i, best_j = 0, 0
+        for i, (ts1, h1) in enumerate(cluster1):
+            for j, (ts2, h2) in enumerate(cluster2):
+                sim = frame_similarity(h1, h2)
+                if sim > best_sim:
+                    best_sim = sim
+                    best_i, best_j = i, j
+        return best_sim, best_i, best_j
+
     best_count = 0
+    num_anchors = min(n1, n2)
 
-    for i in range(n1):
-        regions1 = hashes1[i]
-        best_frame_match = 0.0
-        best_frame_idx = -1
+    for anchor_idx in range(num_anchors):
+        cluster1 = hashes1[anchor_idx]
+        anchor_ts = cluster1[0][0] if cluster1 else 0
 
-        lo = max(0, i - max_offset)
-        hi = min(n2, i + max_offset + 1)
-        best_frame_idx = lo
+        # Find best matching cluster in video2
+        best_cluster_sim = 0.0
+        best_cluster_idx = anchor_idx
+        best_i_in_cluster, best_j_in_cluster = 0, 0
 
+        # Search within ±3 anchors
+        lo = max(0, anchor_idx - 3)
+        hi = min(n2, anchor_idx + 4)
+
+        for other_anchor_idx in range(lo, hi):
+            cluster2 = hashes2[other_anchor_idx]
+            sim, i_in_cluster, j_in_cluster = compare_clusters(cluster1, cluster2)
+            if sim > best_cluster_sim:
+                best_cluster_sim = sim
+                best_cluster_idx = other_anchor_idx
+                best_i_in_cluster, best_j_in_cluster = i_in_cluster, j_in_cluster
+
+        # Verbose output for this anchor
         if verbose:
-            verbose_lines.append(f"      Frame {i}: searching frames {lo} to {hi-1}")
+            verbose_lines.append(f"      Frame {anchor_idx}: anchor={anchor_ts:.1f}s")
+            # Show all comparisons within the winning cluster
+            for i, (ts1, h1) in enumerate(cluster1):
+                for j, (ts2, h2) in enumerate(hashes2[best_cluster_idx]):
+                    sim = frame_similarity(h1, h2)
+                    verbose_lines.append(f"        Frame {i}a: ts={ts1:.1f}s vs Frame {j}a: ts={ts2:.1f}s: similarity={sim:.4f}")
+            best_ts = hashes2[best_cluster_idx][best_j_in_cluster][0] if hashes2[best_cluster_idx] else 0
+            result = "PASS" if best_cluster_sim >= VISUAL_FRAME_THRESHOLD else "FAIL"
+            verbose_lines.append(f"        Best for frame {anchor_idx}: frame {best_j_in_cluster}a ts={best_ts:.1f}s similarity={best_cluster_sim:.4f} (threshold={VISUAL_FRAME_THRESHOLD:.4f}, result={result})")
 
-        for j in range(lo, hi):
-            current_sim = frame_similarity(regions1, hashes2[j])
-            if verbose:
-                verbose_lines.append(f"        Frame {j}: similarity={current_sim:.4f}")
-            if current_sim > best_frame_match:
-                best_frame_match = current_sim
-                best_frame_idx = j
-
-        if verbose:
-            result = "PASS" if best_frame_match >= VISUAL_FRAME_THRESHOLD else "FAIL"
-            verbose_lines.append(f"          Best for frame {i}: frame {best_frame_idx} similarity={best_frame_match:.4f} (threshold={VISUAL_FRAME_THRESHOLD:.4f}, result={result})")
-
-        if best_frame_match >= VISUAL_FRAME_THRESHOLD:
+        if best_cluster_sim >= VISUAL_FRAME_THRESHOLD:
             best_count += 1
 
     return best_count / max(n1, n2), verbose_lines
@@ -587,8 +658,8 @@ def is_same_video(video1: Tuple[str, float], video2: Tuple[str, float]) -> Tuple
 
         if min_dur > SKIP_FIRST_SECONDS + AUDIO_SAMPLE_DURATION:
             available = min_dur - SKIP_FIRST_SECONDS - AUDIO_SAMPLE_DURATION
-            for i in range(NUM_AUDIO_SAMPLES):
-                start = SKIP_FIRST_SECONDS + (available * i / max(NUM_AUDIO_SAMPLES - 1, 1))
+            for i in range(NUM_AUDIO_ANCHORS):
+                start = SKIP_FIRST_SECONDS + (available * i / max(NUM_AUDIO_ANCHORS - 1, 1))
                 sample_starts.append(start)
         else:
             mid = min_dur / 2
@@ -805,37 +876,71 @@ def get_video_resolution(video_path: str) -> Tuple[int, int]:
         return (0, 0)
 
 
-def extract_visual_samples_batch(video_path: str, duration: float, temp_dir: str) -> List[Image.Image]:
-    """Extract frame samples from video, skipping first SKIP_FIRST_SECONDS to avoid intros."""
+def extract_visual_samples_batch(video_path: str, duration: float, temp_dir: str) -> List[List[Tuple[float, Image.Image]]]:
+    """Extract frame clusters from video around anchor points.
+    
+    Returns list of clusters, where each cluster contains (timestamp, image) tuples.
+    Each cluster has: anchor, anchor-cluster_offset, anchor+cluster_offset
+    """
     if temp_dir is None or duration <= 0:
         return []
 
-    effective_start = SKIP_FIRST_SECONDS
+    is_short_video = duration < SHORT_VIDEO_THRESHOLD
+    effective_start = SHORT_SKIP_FIRST if is_short_video else SKIP_FIRST_SECONDS
+    cluster_seconds = SHORT_CLUSTER_SECONDS if is_short_video else VISUAL_CLUSTER_SECONDS
+    num_anchors = NUM_VISUAL_ANCHORS
+
     available = duration - effective_start
 
     if available <= 0:
         return []
 
-    images = []
+    # Calculate max cluster size to avoid overlap and stay within bounds
+    # available / (num_anchors * 2) = max space per anchor on each side
+    max_cluster = min(cluster_seconds, available / (num_anchors * 2))
+
+    clusters: List[List[Tuple[float, Image.Image]]] = []
     base_name = os.path.basename(video_path)
 
-    # 15 evenly distributed points from 5% to 95% of available range (after skipping first 10s)
-    points = [(i + 0.5) / NUM_VISUAL_SAMPLES * 0.9 + 0.05 for i in range(NUM_VISUAL_SAMPLES)]
-    for i, point in enumerate(points):
-        timestamp = effective_start + (available * point)
-        try:
-            temp_frame = os.path.join(temp_dir, f"frame_{base_name}_{i}.jpg")
-            cmd = [
-                'ffmpeg', '-y', '-ss', str(timestamp), '-i', video_path,
-                '-vframes', '1', '-q:v', '2', temp_frame
-            ]
-            subprocess.run(cmd, capture_output=True, timeout=15)
-            if os.path.exists(temp_frame):
-                images.append(Image.open(temp_frame))
-                os.remove(temp_frame)
-        except Exception:
-            pass
-    return images
+    # Calculate anchor positions (evenly distributed from 5% to 95% of available range)
+    anchor_points = [(i + 0.5) / num_anchors * 0.9 + 0.05 for i in range(num_anchors)]
+
+    for anchor_idx, anchor_point in enumerate(anchor_points):
+        anchor_timestamp = effective_start + (available * anchor_point)
+        cluster: List[Tuple[float, Image.Image]] = []
+
+        # For each anchor, extract: anchor, anchor-max_cluster, anchor+max_cluster
+        offsets = [0, -max_cluster, max_cluster]
+
+        for offset_idx, offset in enumerate(offsets):
+            timestamp = anchor_timestamp + offset
+            # Clamp to valid range
+            if timestamp < 0:
+                continue
+            if timestamp > duration:
+                continue
+            if abs(offset) > 0 and abs(offset) < 0.1:
+                # Skip if offset is too small (would be same frame)
+                continue
+
+            try:
+                temp_frame = os.path.join(temp_dir, f"frame_{base_name}_{anchor_idx}_{offset_idx}.jpg")
+                cmd = [
+                    'ffmpeg', '-y', '-ss', str(timestamp), '-i', video_path,
+                    '-vframes', '1', '-q:v', '2', temp_frame
+                ]
+                subprocess.run(cmd, capture_output=True, timeout=15)
+                if os.path.exists(temp_frame):
+                    img = Image.open(temp_frame)
+                    cluster.append((timestamp, img))
+                    os.remove(temp_frame)
+            except Exception:
+                pass
+
+        if cluster:
+            clusters.append(cluster)
+
+    return clusters
 
 
 # ---------------------------------------------------------------------------
@@ -845,6 +950,7 @@ def extract_visual_samples_batch(video_path: str, duration: float, temp_dir: str
 CACHE_DIR = ".dedup_cache"
 CACHE_INDEX = os.path.join(CACHE_DIR, "index.json")
 CACHE_LOCK = os.path.join(CACHE_DIR, ".lock")
+CACHE_VERSION = 2  # Increment to invalidate old cache entries
 
 
 def get_cache_key(video_path: str) -> str:
@@ -894,6 +1000,8 @@ def load_cached_features(video_path: str) -> Optional[VideoFeatures]:
         return None
     current_stat = os.stat(video_path)
     if entry.get("size") != current_stat.st_size or entry.get("mtime") != current_stat.st_mtime:
+        return None
+    if entry.get("cache_version", 1) != CACHE_VERSION:
         return None
     features: VideoFeatures = {
         "path": video_path,
@@ -954,6 +1062,7 @@ def save_features_to_cache(features: VideoFeatures) -> None:
         "path": os.path.abspath(video_path),
         "size": stat.st_size,
         "mtime": stat.st_mtime,
+        "cache_version": CACHE_VERSION,
         "duration": features.get("duration", 0.0),
         "resolution": list(features.get("resolution", (0, 0))),
         "has_audio": features.get("has_audio", False),
@@ -1020,20 +1129,45 @@ def extract_all_features(video_path: str, temp_dir: Optional[str] = None) -> Vid
     duration = features["duration"]
 
     if features["has_audio"]:
-        sample_starts: List[float] = []
-        # Use same percentage-based formula as visual samples: 5% to 95%
-        points = [(i + 0.5) / NUM_AUDIO_SAMPLES * 0.9 + 0.05 for i in range(NUM_AUDIO_SAMPLES)]
-        for i in range(NUM_AUDIO_SAMPLES):
-            start = points[i] * duration
-            audio_data = extract_audio_sample(video_path, start, AUDIO_SAMPLE_DURATION)
-            if audio_data is not None:
-                fp = generate_audio_fingerprint(audio_data)
-                if len(fp) > 0:
-                    features["audio_fingerprints"].append(fp.tolist())
+        is_short_video = duration < SHORT_VIDEO_THRESHOLD
+        effective_skip = SHORT_SKIP_FIRST if is_short_video else SKIP_FIRST_SECONDS
+        cluster_seconds = SHORT_CLUSTER_SECONDS if is_short_video else AUDIO_CLUSTER_SECONDS
+        num_anchors = NUM_AUDIO_ANCHORS
 
-    images = extract_visual_samples_batch(video_path, duration, effective_temp_dir)
-    if images:
-        features["visual_hashes"] = generate_visual_fingerprint(images)
+        available = duration - effective_skip
+        if available > AUDIO_SAMPLE_DURATION:
+            # Calculate max cluster size to avoid overlap
+            max_cluster = min(cluster_seconds, available / (num_anchors * 2))
+
+            # Calculate anchor positions
+            anchor_points = [(i + 0.5) / num_anchors * 0.9 + 0.05 for i in range(num_anchors)]
+
+            for anchor_idx, anchor_point in enumerate(anchor_points):
+                anchor_timestamp = effective_skip + (available * anchor_point)
+                cluster: List[Tuple[float, List[float]]] = []
+
+                offsets = [0, -max_cluster, max_cluster]
+                for offset_idx, offset in enumerate(offsets):
+                    timestamp = anchor_timestamp + offset
+                    if timestamp < 0:
+                        continue
+                    if timestamp + AUDIO_SAMPLE_DURATION > duration:
+                        continue
+                    if abs(offset) > 0 and abs(offset) < 0.5:
+                        continue
+
+                    audio_data = extract_audio_sample(video_path, timestamp, AUDIO_SAMPLE_DURATION)
+                    if audio_data is not None:
+                        fp = generate_audio_fingerprint(audio_data)
+                        if len(fp) > 0:
+                            cluster.append((timestamp, fp.tolist()))
+
+                if cluster:
+                    features["audio_fingerprints"].append(cluster)
+
+    clusters = extract_visual_samples_batch(video_path, duration, effective_temp_dir)
+    if clusters:
+        features["visual_hashes"] = generate_visual_fingerprint(clusters)
 
     if features.get("duration", 0) > 0:
         save_features_to_cache(features)
