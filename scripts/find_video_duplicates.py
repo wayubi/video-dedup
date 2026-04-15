@@ -30,32 +30,34 @@ from scipy.ndimage import convolve
 VideoFeatures = Dict[str, Any]
 
 
-def compare_features(f1: VideoFeatures, f2: VideoFeatures, verbose: bool = False) -> Tuple[bool, str]:
+def compare_features(f1: VideoFeatures, f2: VideoFeatures, verbose: bool = False) -> Tuple[bool, str, List[str]]:
     """Compare two videos using precomputed features with multi-stage filtering."""
     v1_name = os.path.basename(f1.get("path", ""))
     v2_name = os.path.basename(f2.get("path", ""))
     dur1, dur2 = f1.get("duration", 0), f2.get("duration", 0)
 
+    verbose_lines: List[str] = []
+
     if verbose:
-        print(f"  Comparing {v1_name} vs {v2_name}")
+        verbose_lines.append(f"  Comparing {v1_name} vs {v2_name}")
 
     if dur1 <= 0 or dur2 <= 0:
-        return False, "no_duration"
+        return False, "no_duration", verbose_lines
 
     # STAGE 0: File hash (instant - identical files)
     hash1 = f1.get("file_hash", "")
     hash2 = f2.get("file_hash", "")
     if hash1 and hash2 and hash1 == hash2:
         if verbose:
-            print(f"    Stage 0 (File Hash): MATCH")
-        return True, "file_hash"
+            verbose_lines.append(f"    Stage 0 (File Hash): MATCH")
+        return True, "file_hash", verbose_lines
 
     # STAGE 1: Duration (fastest)
     duration_diff = abs(dur1 - dur2) / max(dur1, dur2, 1)
     if verbose:
-        print(f"    Stage 1 (Duration): diff={duration_diff:.4f}, threshold={LENGTH_TOLERANCE}, result={'PASS' if duration_diff <= LENGTH_TOLERANCE else 'FAIL'}")
+        verbose_lines.append(f"    Stage 1 (Duration): diff={duration_diff:.4f}, threshold={LENGTH_TOLERANCE}, result={'PASS' if duration_diff <= LENGTH_TOLERANCE else 'FAIL'}")
     if duration_diff > LENGTH_TOLERANCE:
-        return False, "duration_mismatch"
+        return False, "duration_mismatch", verbose_lines
 
     # STAGE 2: Aspect ratio check
     res1 = f1.get("resolution", (0, 0))
@@ -65,9 +67,9 @@ def compare_features(f1: VideoFeatures, f2: VideoFeatures, verbose: bool = False
         ratio2 = res2[0] / res2[1] if res2[1] > 0 else 0
         ratio_diff = abs(ratio1 - ratio2)
         if verbose:
-            print(f"    Stage 2 (Aspect Ratio): ratio1={ratio1:.3f}, ratio2={ratio2:.3f}, diff={ratio_diff:.4f}, threshold=0.05, result={'PASS' if ratio_diff <= 0.05 else 'FAIL'}")
+            verbose_lines.append(f"    Stage 2 (Aspect Ratio): ratio1={ratio1:.3f}, ratio2={ratio2:.3f}, diff={ratio_diff:.4f}, threshold=0.05, result={'PASS' if ratio_diff <= 0.05 else 'FAIL'}")
         if ratio_diff > 0.05:
-            return False, "aspect_ratio_mismatch"
+            return False, "aspect_ratio_mismatch", verbose_lines
 
     # STAGE 3: File size
     size1 = f1.get("file_size", 0)
@@ -75,9 +77,9 @@ def compare_features(f1: VideoFeatures, f2: VideoFeatures, verbose: bool = False
     if size1 > 0 and size2 > 0:
         size_diff = abs(size1 - size2) / max(size1, size2)
         if verbose:
-            print(f"    Stage 3 (File Size): size1={size1}, size2={size2}, diff={size_diff:.4f}, threshold=0.90, result={'PASS' if size_diff <= 0.90 else 'FAIL'}")
+            verbose_lines.append(f"    Stage 3 (File Size): size1={size1}, size2={size2}, diff={size_diff:.4f}, threshold=0.90, result={'PASS' if size_diff <= 0.90 else 'FAIL'}")
         if size_diff > 0.90:
-            return False, "size_mismatch"
+            return False, "size_mismatch", verbose_lines
 
     # STAGE 4: Audio fingerprint
     if f1.get("has_audio") and f2.get("has_audio"):
@@ -86,7 +88,7 @@ def compare_features(f1: VideoFeatures, f2: VideoFeatures, verbose: bool = False
 
         if fps1 and fps2:
             if verbose:
-                print(f"    Stage 4 (Audio): {len(fps1)} samples from each video, max_offset={MAX_AUDIO_OFFSET_SECONDS}s")
+                verbose_lines.append(f"    Stage 4 (Audio): {len(fps1)} samples from each video, max_offset={MAX_AUDIO_OFFSET_SECONDS}s")
             matches = 0
             for i, fp1_list in enumerate(fps1):
                 fp1_arr = np.array(fp1_list)
@@ -96,18 +98,18 @@ def compare_features(f1: VideoFeatures, f2: VideoFeatures, verbose: bool = False
                     fp2_arr = np.array(fp2_list)
                     sim = compare_audio_fingerprints(fp1_arr, fp2_arr)
                     if verbose:
-                        print(f"      Sample {i} vs {j}: similarity={sim:.4f}")
+                        verbose_lines.append(f"      Sample {i} vs {j}: similarity={sim:.4f}")
                     if sim > best_sim:
                         best_sim = sim
                         best_idx = j
                 if verbose:
-                    print(f"        Best for sample {i}: sample {best_idx} similarity={best_sim:.4f} (threshold={AUDIO_THRESHOLD})")
+                    verbose_lines.append(f"        Best for sample {i}: sample {best_idx} similarity={best_sim:.4f} (threshold={AUDIO_THRESHOLD})")
                 if best_sim > AUDIO_THRESHOLD:
                     matches += 1
 
             required = max(1, round(AUDIO_MATCH_RATIO * NUM_AUDIO_SAMPLES))
             if verbose:
-                print(f"      Audio: {matches}/{len(fps1)} matched, required={required}, threshold={AUDIO_THRESHOLD}")
+                verbose_lines.append(f"      Audio: {matches}/{len(fps1)} matched, required={required}, threshold={AUDIO_THRESHOLD}")
 
     # STAGE 5: Visual hash
     hashes1 = f1.get("visual_hashes", [])
@@ -115,16 +117,17 @@ def compare_features(f1: VideoFeatures, f2: VideoFeatures, verbose: bool = False
 
     if hashes1 and hashes2:
         if verbose:
-            print(f"    Stage 5 (Visual): {len(hashes1)} frames with max_offset={MAX_VISUAL_OFFSET}")
-        visual_sim = compare_visual_fingerprints(hashes1, hashes2, MAX_VISUAL_OFFSET, verbose)
+            verbose_lines.append(f"    Stage 5 (Visual): {len(hashes1)} frames with max_offset={MAX_VISUAL_OFFSET}")
+        visual_sim, visual_verbose_lines = compare_visual_fingerprints(hashes1, hashes2, MAX_VISUAL_OFFSET, verbose)
+        verbose_lines.extend(visual_verbose_lines)
         matched_frames = int(visual_sim * len(hashes1))
         required = max(1, round(VISUAL_MATCH_RATIO * NUM_VISUAL_SAMPLES))
         if verbose:
-            print(f"      Visual: {matched_frames}/{len(hashes1)} matched, required={required}, threshold={VISUAL_THRESHOLD}")
+            verbose_lines.append(f"      Visual: {matched_frames}/{len(hashes1)} matched, required={required}, threshold={VISUAL_THRESHOLD}")
         if visual_sim >= VISUAL_THRESHOLD:
-            return True, "visual_fingerprint"
+            return True, "visual_fingerprint", verbose_lines
 
-    return False, "no_match"
+    return False, "no_match", verbose_lines
 
 
 # ---------------------------------------------------------------------------
@@ -424,9 +427,9 @@ def hamming_distance(hash1: str, hash2: str) -> int:
     return sum(c1 != c2 for c1, c2 in zip(bin1, bin2))
 
 
-def compare_visual_fingerprints(hashes1: List[List[str]], hashes2: List[List[str]], max_offset: int = 1, verbose: bool = False) -> float:
+def compare_visual_fingerprints(hashes1: List[List[str]], hashes2: List[List[str]], max_offset: int = 1, verbose: bool = False) -> Tuple[float, List[str]]:
     """
-    Compare visual fingerprints and return similarity (0-1).
+    Compare visual fingerprints and return similarity (0-1) and verbose lines.
     Each frame has 9 regions (3x3 grid). A frame is "good" if at least 5 of 9
     regions match (distance <= 9), allowing for 1-2 regions with watermarks
     or other differences.
@@ -435,16 +438,18 @@ def compare_visual_fingerprints(hashes1: List[List[str]], hashes2: List[List[str
     that shifts the content. For each frame position, searches within ±max_offset
     positions for the best match.
     """
+    verbose_lines: List[str] = []
+
     if not hashes1 or not hashes2:
-        return 0.0
+        return 0.0, verbose_lines
 
     n1, n2 = len(hashes1), len(hashes2)
     if n1 == 0 or n2 == 0:
-        return 0.0
+        return 0.0, verbose_lines
 
     threshold_match = 15
 
-    def frame_similarity(h1: List[str], h2: List[str], verbose: bool = False) -> float:
+    def frame_similarity(h1: List[str], h2: List[str]) -> float:
         if not h1 or not h2:
             return 0.0
         region_matches = 0
@@ -454,12 +459,6 @@ def compare_visual_fingerprints(hashes1: List[List[str]], hashes2: List[List[str
             dists.append(dist)
             if dist <= threshold_match:
                 region_matches += 1
-        if verbose:
-            min_dist = min(dists)
-            max_dist = max(dists)
-            avg_dist = sum(dists) / len(dists)
-            print(f"        Regions: {len(h1)}, matches: {region_matches}/9, dists: {dists}")
-            print(f"          min={min_dist}, max={max_dist}, avg={avg_dist:.1f}")
         return 1.0 if region_matches >= 3 else 0.0
 
     best_count = 0
@@ -472,19 +471,19 @@ def compare_visual_fingerprints(hashes1: List[List[str]], hashes2: List[List[str
         hi = min(n2, i + max_offset + 1)
 
         if verbose:
-            print(f"        Frame {i}: searching offsets {lo} to {hi-1}")
+            verbose_lines.append(f"        Frame {i}: searching offsets {lo} to {hi-1}")
 
         for j in range(lo, hi):
-            current_sim = frame_similarity(regions1, hashes2[j], verbose)
+            current_sim = frame_similarity(regions1, hashes2[j])
             if verbose:
-                print(f"          Offset {j-i}: similarity={current_sim:.4f}")
+                verbose_lines.append(f"          Offset {j-i}: similarity={current_sim:.4f}")
             if current_sim > best_frame_match:
                 best_frame_match = current_sim
 
         if best_frame_match > 0:
             best_count += 1
 
-    return best_count / max(n1, n2)
+    return best_count / max(n1, n2), verbose_lines
 
 
 # ---------------------------------------------------------------------------
@@ -603,7 +602,8 @@ def is_same_video(video1: Tuple[str, float], video2: Tuple[str, float]) -> Tuple
     if len(images1) >= 2 and len(images2) >= 2:
         hashes1 = generate_visual_fingerprint(images1)
         hashes2 = generate_visual_fingerprint(images2)
-        if compare_visual_fingerprints(hashes1, hashes2) >= 0.5:
+        visual_sim, _ = compare_visual_fingerprints(hashes1, hashes2)
+        if visual_sim >= 0.5:
             return True, "visual_fingerprint"
 
     return False, "no_match"
@@ -626,16 +626,30 @@ def find_duplicate_groups(videos: List[Tuple[str, float]]) -> List[List[str]]:
     matches: Dict[str, Set[str]] = defaultdict(set)
     print(f"Analyzing {n} videos for duplicates...")
 
+    total_comparisons = 0
+    completed = 0
+    for bucket, bucket_videos in duration_groups.items():
+        bucket_size = len(bucket_videos)
+        if bucket_size >= 2:
+            total_comparisons += bucket_size * (bucket_size - 1) // 2
+
     for bucket, bucket_videos in duration_groups.items():
         bucket_size = len(bucket_videos)
         if bucket_size < 2:
             continue
-        for i in tqdm(range(bucket_size), desc=f"Bucket {bucket}s"):
+        for i in range(bucket_size):
             for j in range(i + 1, bucket_size):
                 is_dup, _ = is_same_video(bucket_videos[i], bucket_videos[j])
                 if is_dup:
                     matches[bucket_videos[i][0]].add(bucket_videos[j][0])
                     matches[bucket_videos[j][0]].add(bucket_videos[i][0])
+                completed += 1
+                if completed % 100 == 0:
+                    pct = int(100 * completed / total_comparisons) if total_comparisons > 0 else 0
+                    print(f"Progress: {completed}/{total_comparisons} ({pct}%)")
+
+    if total_comparisons > 0 and total_comparisons % 100 != 0:
+        print(f"Progress: {total_comparisons}/{total_comparisons} (100%)")
 
     visited: Set[str] = set()
     groups = []
@@ -705,22 +719,36 @@ def find_duplicate_groups_with_features(features_list: List[VideoFeatures], verb
         return []
 
     n_workers = os.cpu_count() or 4
-    chunk_size = min(5000, len(all_pairs))
     comparison_results = []
+    total_pairs = len(all_pairs)
+
+    print(f"Comparing {total_pairs} video pairs using {n_workers} workers...")
 
     with ProcessPoolExecutor(max_workers=n_workers) as executor:
-        for chunk_start in range(0, len(all_pairs), chunk_size):
-            chunk = all_pairs[chunk_start:chunk_start + chunk_size]
-            futures = {executor.submit(compare_features, f1, f2, verbose): (f1, f2) for f1, f2 in chunk}
-            for future in tqdm(as_completed(futures), total=len(chunk),
-                               desc=f"Comparing [{chunk_start}-{chunk_start + len(chunk)}]"):
-                try:
-                    f1, f2 = futures[future]
-                    is_dup, _ = future.result()
-                    if is_dup:
-                        comparison_results.append((f1["path"], f2["path"]))
-                except Exception:
-                    pass
+        futures = {executor.submit(compare_features, f1, f2, verbose): (f1, f2) for f1, f2 in all_pairs}
+        completed = 0
+        for future in as_completed(futures):
+            try:
+                f1, f2 = futures[future]
+                is_dup, _, verbose_lines = future.result()
+
+                print(f"Comparing: {os.path.basename(f1['path'])} vs {os.path.basename(f2['path'])}")
+                for line in verbose_lines:
+                    print(line)
+
+                if is_dup:
+                    comparison_results.append((f1["path"], f2["path"]))
+
+                completed += 1
+                if completed % 1000 == 0:
+                    pct = int(100 * completed / total_pairs)
+                    print(f"Progress: {completed}/{total_pairs} ({pct}%)")
+
+            except Exception:
+                completed += 1
+
+    if total_pairs % 1000 != 0:
+        print(f"Progress: {total_pairs}/{total_pairs} (100%)")
 
     for p1, p2 in comparison_results:
         matches[p1].add(p2)
@@ -1563,13 +1591,17 @@ def main() -> None:
             print("\n" + "=" * 60)
             print("UPSCALING DETECTION MODE")
             print("=" * 60)
-            for path in tqdm(video_paths, desc="Analyzing upscaling"):
+            total = len(video_paths)
+            for idx, path in enumerate(video_paths):
                 is_upscaled, confidence, details = detect_upscaling(path)
                 upscaling_results[path] = {
                     "is_upscaled": is_upscaled,
                     "confidence": round(confidence, 3),
                     "details": details,
                 }
+                if (idx + 1) % 10 == 0 or idx + 1 == total:
+                    pct = int(100 * (idx + 1) / total)
+                    print(f"Upscaling analysis: {idx + 1}/{total} ({pct}%)")
             upscaled_count = sum(1 for r in upscaling_results.values() if r["is_upscaled"])
             print(f"\nUpscaling: {upscaled_count} of {len(upscaling_results)} flagged")
             for path, result in upscaling_results.items():
@@ -1583,13 +1615,19 @@ def main() -> None:
         features_list: List[VideoFeatures] = []
         with ProcessPoolExecutor(max_workers=n_workers) as executor:
             futures = {executor.submit(extract_all_features, path): path for path in video_paths}
-            for future in tqdm(as_completed(futures), total=len(futures), desc="Extracting features"):
+            completed = 0
+            total = len(futures)
+            for future in as_completed(futures):
                 try:
                     features = future.result()
                     if features.get("duration", 0) > 0:
                         features_list.append(features)
                 except Exception:
                     pass
+                completed += 1
+                if completed % 10 == 0 or completed == total:
+                    pct = int(100 * completed / total)
+                    print(f"Extracting features: {completed}/{total} ({pct}%)")
 
         if len(features_list) < 2:
             print("Not enough valid videos to compare")
