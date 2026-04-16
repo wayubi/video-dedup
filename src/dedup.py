@@ -226,11 +226,15 @@ def run_scan(args):
                     print(f"  - {os.path.basename(path)} ({w}x{h}) [conf: {result['confidence']:.2f}]")
 
         if args.wipe_cache:
-            import shutil as sh
-            from lib.config import CACHE_DIR
-            if os.path.exists(CACHE_DIR):
-                sh.rmtree(CACHE_DIR)
-                print(f"Wiped cache directory")
+            from lib.config import CACHE_DIR, CACHE_LOCK, CACHE_INDEX
+            try:
+                if os.path.exists(CACHE_LOCK):
+                    os.remove(CACHE_LOCK)
+                if os.path.exists(CACHE_INDEX):
+                    os.remove(CACHE_INDEX)
+                print(f"Deleted cache contents: {CACHE_DIR}")
+            except Exception as e:
+                print(f"Warning: Could not fully delete cache: {e}")
 
         if args.prune_cache:
             pruned = prune_cache(base_dir)
