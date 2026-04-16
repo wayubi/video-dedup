@@ -3,10 +3,8 @@
   "instructions": ["AGENTS.md"],
   "permission": {
     "bash": {
-      "python3 scripts/find_video_duplicates.py *": "allow",
-      "python3 scripts/dedup_delete.py *": "allow",
-      "python3 scripts/dedup_restore.py *": "allow",
-      "python3 -m py_compile scripts/*.py": "allow",
+      "python3 src/dedup.py *": "allow",
+      "python3 -m py_compile src/*.py src/lib/*.py": "allow",
       "ffprobe *": "allow",
       "ffmpeg *": "ask",
       "ls *": "allow",

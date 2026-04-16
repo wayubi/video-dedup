@@ -9,20 +9,21 @@ fingerprinting as a fallback for videos without audio.
 
 ## Scripts
 
-### `scripts/find_video_duplicates.py` — main detector (~1250 lines)
-Scans a directory for duplicate videos and organises them into a `.deduped/` staging folder.
+### `src/dedup.py` — main entrypoint (~400 lines)
+Unified CLI for scanning, deleting candidates, and restoring files.
 
 **How to run:**
 ```bash
-python3 scripts/find_video_duplicates.py <directory>
-python3 scripts/find_video_duplicates.py <directory> --dry-run
-python3 scripts/find_video_duplicates.py <directory> --detect-upscaling
-python3 scripts/find_video_duplicates.py <directory> --include-subfolders
-python3 scripts/find_video_duplicates.py <directory> --include-subfolders path/a path/b
-python3 scripts/find_video_duplicates.py <directory> --include-subfolders --exclude-root
-python3 scripts/find_video_duplicates.py <directory> --no-subfolders
-python3 scripts/find_video_duplicates.py <directory> --include-folders path/a path/b
-python3 scripts/find_video_duplicates.py <directory> --report my_report.json
+python3 src/dedup.py <directory>
+python3 src/dedup.py <directory> --scan
+python3 src/dedup.py <directory> --scan --dry-run
+python3 src/dedup.py <directory> --scan --detect-upscaling
+python3 src/dedup.py <directory> --scan --no-subfolders
+python3 src/dedup.py <directory> --scan --include-folders path/a path/b
+python3 src/dedup.py <directory> --scan --report my_report.json
+python3 src/dedup.py <directory> --delete
+python3 src/dedup.py <directory> --delete --confirm
+python3 src/dedup.py <directory> --restore
 ```
 
 **Key internals:**
