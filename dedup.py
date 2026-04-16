@@ -201,6 +201,37 @@ def run_scan(args):
         video_paths = sorted(video_paths, key=lambda p: os.path.getsize(p) if os.path.exists(p) else 0)
         print(f"Found {len(video_paths)} videos")
 
+        upscaling_results = {}
+        if args.detect_upscaling:
+            from lib.config import UPSCALING_CONFIDENCE_THRESHOLD
+            print("\n" + "=" * 60)
+            print("UPSCALING DETECTION MODE")
+            print("=" * 60)
+            total = len(video_paths)
+            for idx, path in enumerate(video_paths):
+                is_upscaled, confidence, details = detect_upscaling(path)
+                upscaling_results[path] = {
+                    "is_upscaled": is_upscaled,
+                    "confidence": round(confidence, 3),
+                    "details": details,
+                }
+                if (idx + 1) % 10 == 0 or idx + 1 == total:
+                    pct = int(100 * (idx + 1) / total)
+                    print(f"Upscaling analysis: {idx + 1}/{total} ({pct}%)", flush=True)
+            upscaled_count = sum(1 for r in upscaling_results.values() if r["is_upscaled"])
+            print(f"\nUpscaling: {upscaled_count} of {len(upscaling_results)} flagged")
+            for path, result in upscaling_results.items():
+                if result["is_upscaled"]:
+                    w, h = result["details"].get("resolution", (0, 0))
+                    print(f"  - {os.path.basename(path)} ({w}x{h}) [conf: {result['confidence']:.2f}]")
+
+        if args.wipe_cache:
+            import shutil as sh
+            from lib.config import CACHE_DIR
+            if os.path.exists(CACHE_DIR):
+                sh.rmtree(CACHE_DIR)
+                print(f"Wiped cache directory")
+
         if args.prune_cache:
             pruned = prune_cache(base_dir)
             print(f"{'Pruned ' if pruned else ''}{pruned} stale cache entries")
@@ -238,6 +269,20 @@ def run_scan(args):
             'sets': [{'set_id': i + 1, 'videos': [{'path': v} for v in group]}
                     for i, group in enumerate(duplicate_groups)],
         }
+
+        if args.detect_upscaling:
+            from lib.config import UPSCALING_CONFIDENCE_THRESHOLD, MIN_UPSCALING_ANALYSIS_RESOLUTION
+            upscaled_count = sum(1 for r in upscaling_results.values() if r["is_upscaled"])
+            scan_report['upscaling_analysis'] = {
+                'enabled': True,
+                'threshold': UPSCALING_CONFIDENCE_THRESHOLD,
+                'min_resolution_analyzed': MIN_UPSCALING_ANALYSIS_RESOLUTION,
+                'summary': {
+                    'total_analyzed': len(upscaling_results),
+                    'upscaled_detected': upscaled_count,
+                    'analysis_methods': ['frequency_analysis', 'edge_sharpness', 'multiscale_comparison'],
+                },
+            }
 
         report_path = os.path.join(base_dir, args.report)
         with open(report_path, 'w') as f:
