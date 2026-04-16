@@ -1,0 +1,145 @@
+import os
+import subprocess
+from typing import List, Tuple
+from PIL import Image
+import imagehash
+from dedup_config import TEMP_DIR, NUM_VISUAL_ANCHORS, VISUAL_FRAME_THRESHOLD
+
+
+def extract_visual_samples(video_path: str, duration: float) -> List[Image.Image]:
+    """Extract frame samples from video at specific timestamps."""
+    if TEMP_DIR is None:
+        return []
+    images = []
+    points = [(i + 0.5) / NUM_VISUAL_ANCHORS * 0.9 + 0.05 for i in range(NUM_VISUAL_ANCHORS)]
+    for point in points:
+        timestamp = duration * point
+        try:
+            temp_frame = os.path.join(TEMP_DIR, f"frame_{os.path.basename(video_path)}_{point}.jpg")
+            cmd = [
+                'ffmpeg', '-y', '-ss', str(timestamp), '-i', video_path,
+                '-vframes', '1', '-q:v', '2', temp_frame
+            ]
+            subprocess.run(cmd, capture_output=True, timeout=15)
+            if os.path.exists(temp_frame):
+                images.append(Image.open(temp_frame))
+                os.remove(temp_frame)
+        except Exception:
+            pass
+    return images
+
+
+def generate_visual_fingerprint(clusters: List[List[Tuple[float, Image.Image]]]) -> List[List[Tuple[float, List[str]]]]:
+    """Generate region-based perceptual hashes per frame (3x3 grid)."""
+    result: List[List[Tuple[float, List[str]]]] = []
+    for cluster in clusters:
+        cluster_hashes: List[Tuple[float, List[str]]] = []
+        for timestamp, img in cluster:
+            try:
+                if img.mode != 'RGB':
+                    img = img.convert('RGB')
+                w, h = img.size
+                region_hashes = []
+                for row in range(3):
+                    y1 = int(h * row / 3)
+                    y2 = int(h * (row + 1) / 3)
+                    for col in range(3):
+                        x1 = int(w * col / 3)
+                        x2 = int(w * (col + 1) / 3)
+                        region = img.crop((x1, y1, x2, y2))
+                        region_hashes.append(str(imagehash.phash(region)))
+                cluster_hashes.append((timestamp, region_hashes))
+            except Exception:
+                pass
+        if cluster_hashes:
+            result.append(cluster_hashes)
+    return result
+
+
+def hamming_distance(hash1: str, hash2: str) -> int:
+    """Hamming distance between two hex hashes."""
+    if len(hash1) != len(hash2):
+        return 1000
+    bin1 = bin(int(hash1, 16))[2:].zfill(64)
+    bin2 = bin(int(hash2, 16))[2:].zfill(64)
+    return sum(c1 != c2 for c1, c2 in zip(bin1, bin2))
+
+
+def compare_visual_fingerprints(hashes1: List[List[Tuple[float, List[str]]]], hashes2: List[List[Tuple[float, List[str]]]], verbose: bool = False) -> Tuple[float, List[str]]:
+    """Compare visual fingerprints using cluster-based matching."""
+    verbose_lines: List[str] = []
+
+    if not hashes1 or not hashes2:
+        return 0.0, verbose_lines
+
+    n1, n2 = len(hashes1), len(hashes2)
+    if n1 == 0 or n2 == 0:
+        return 0.0, verbose_lines
+
+    threshold_match = 15
+
+    def frame_similarity(h1: List[str], h2: List[str]) -> float:
+        if not h1 or not h2:
+            return 0.0
+        region_matches = 0
+        for r1, r2 in zip(h1, h2):
+            dist = hamming_distance(r1, r2)
+            if dist <= threshold_match:
+                region_matches += 1
+        return region_matches / 9.0
+
+    def compare_clusters(cluster1: List[Tuple[float, List[str]]], cluster2: List[Tuple[float, List[str]]]) -> Tuple[float, int, int]:
+        best_sim = 0.0
+        best_i, best_j = 0, 0
+        for i, (ts1, h1) in enumerate(cluster1):
+            for j, (ts2, h2) in enumerate(cluster2):
+                sim = frame_similarity(h1, h2)
+                if sim > best_sim:
+                    best_sim = sim
+                    best_i, best_j = i, j
+        return best_sim, best_i, best_j
+
+    best_count = 0
+    num_anchors = min(n1, n2)
+
+    for anchor_idx in range(num_anchors):
+        cluster1 = hashes1[anchor_idx]
+        anchor_ts = cluster1[0][0] if cluster1 else 0
+
+        best_cluster_sim = 0.0
+        best_cluster_idx = anchor_idx
+        best_i_in_cluster, best_j_in_cluster = 0, 0
+
+        lo = max(0, anchor_idx - 3)
+        hi = min(n2, anchor_idx + 4)
+
+        for other_anchor_idx in range(lo, hi):
+            cluster2 = hashes2[other_anchor_idx]
+            sim, i_in_cluster, j_in_cluster = compare_clusters(cluster1, cluster2)
+            if sim > best_cluster_sim:
+                best_cluster_sim = sim
+                best_cluster_idx = other_anchor_idx
+                best_i_in_cluster, best_j_in_cluster = i_in_cluster, j_in_cluster
+
+        if verbose:
+            verbose_lines.append(f"      Frame {anchor_idx}: anchor={anchor_ts:.1f}s")
+            for i, (ts1, h1) in enumerate(cluster1):
+                for j, (ts2, h2) in enumerate(hashes2[best_cluster_idx]):
+                    sim = frame_similarity(h1, h2)
+                    verbose_lines.append(f"        Frame {i}a: ts={ts1:.1f}s vs Frame {j}a: ts={ts2:.1f}s: similarity={sim:.4f}")
+            best_ts = hashes2[best_cluster_idx][best_j_in_cluster][0] if hashes2[best_cluster_idx] else 0
+            result = "PASS" if best_cluster_sim >= VISUAL_FRAME_THRESHOLD else "FAIL"
+            verbose_lines.append(f"        Best for frame {anchor_idx}: frame {best_j_in_cluster}a ts={best_ts:.1f}s similarity={best_cluster_sim:.4f} (threshold={VISUAL_FRAME_THRESHOLD:.4f}, result={result})")
+
+        if best_cluster_sim >= VISUAL_FRAME_THRESHOLD:
+            best_count += 1
+
+    return best_count / max(n1, n2), verbose_lines
+
+
+def extract_visual_samples_batch(video_path: str, duration: float, temp_dir: str):
+    """Extract visual samples for batched processing."""
+    images = extract_visual_samples(video_path, duration)
+    if not images:
+        return []
+    return [[(0.0, img)] for img in images]
