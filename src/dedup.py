@@ -108,24 +108,47 @@ def compare_features(f1: VideoFeatures, f2: VideoFeatures, verbose: bool = False
             if verbose:
                 verbose_lines.append(f"    Stage 4 (Audio): {len(fps1)} anchor clusters")
 
+            def compare_audio_clusters(cluster1, cluster2):
+                best_sim = 0.0
+                best_i, best_j = 0, 0
+                for i, (ts1, fp1_list) in enumerate(cluster1):
+                    for j, (ts2, fp2_list) in enumerate(cluster2):
+                        fp1_arr = np.array(fp1_list)
+                        fp2_arr = np.array(fp2_list)
+                        sim = compare_audio_fingerprints(fp1_arr, fp2_arr)
+                        if sim > best_sim:
+                            best_sim = sim
+                            best_i, best_j = i, j
+                return best_sim, best_i, best_j
+
             matches = 0
             num_anchors = min(len(fps1), len(fps2))
 
             for anchor_idx in range(num_anchors):
                 cluster1 = fps1[anchor_idx]
-                cluster2 = fps2[anchor_idx]
-                best_sim = 0.0
-                for ts1, fp1_list in cluster1:
-                    for ts2, fp2_list in cluster2:
-                        sim = compare_audio_fingerprints(np.array(fp1_list), np.array(fp2_list))
-                        if sim > best_sim:
-                            best_sim = sim
+                anchor_ts = cluster1[0][0] if cluster1 else 0
+
+                best_cluster_sim = 0.0
+                best_cluster_idx = anchor_idx
+                best_i_in_cluster, best_j_in_cluster = 0, 0
+
+                lo = max(0, anchor_idx - 3)
+                hi = min(len(fps2), anchor_idx + 4)
+
+                for other_anchor_idx in range(lo, hi):
+                    cluster2 = fps2[other_anchor_idx]
+                    sim, i_in_cluster, j_in_cluster = compare_audio_clusters(cluster1, cluster2)
+                    if sim > best_cluster_sim:
+                        best_cluster_sim = sim
+                        best_cluster_idx = other_anchor_idx
+                        best_i_in_cluster, best_j_in_cluster = i_in_cluster, j_in_cluster
 
                 if verbose:
-                    result_str = "PASS" if best_sim >= AUDIO_THRESHOLD else "FAIL"
-                    verbose_lines.append(f"      Anchor {anchor_idx}: best_sim={best_sim:.4f}, threshold={AUDIO_THRESHOLD}, result={result_str}")
+                    anchor_sample_ts = fps2[best_cluster_idx][best_j_in_cluster][0] if best_cluster_idx < len(fps2) and best_j_in_cluster < len(fps2[best_cluster_idx]) else 0
+                    result_str = "PASS" if best_cluster_sim >= AUDIO_THRESHOLD else "FAIL"
+                    verbose_lines.append(f"      Sample {anchor_idx}: anchor={anchor_ts:.1f}s vs {best_cluster_idx}: best_sim={best_cluster_sim:.4f}, threshold={AUDIO_THRESHOLD}, result={result_str}")
 
-                if best_sim >= AUDIO_THRESHOLD:
+                if best_cluster_sim >= AUDIO_THRESHOLD:
                     matches += 1
 
             if verbose:
