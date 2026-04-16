@@ -3,7 +3,62 @@ import subprocess
 from typing import Optional
 import numpy as np
 import audioread
-from dedup_config import TEMP_DIR, AUDIO_SAMPLE_DURATION, _FP_VALUES_PER_SECOND, MAX_AUDIO_OFFSET_SECONDS
+from lib.config import (
+    TEMP_DIR, AUDIO_SAMPLE_DURATION, _FP_VALUES_PER_SECOND, MAX_AUDIO_OFFSET_SECONDS
+)
+
+
+def get_video_duration(video_path: str) -> float:
+    """Get video duration in seconds using ffprobe."""
+    try:
+        cmd = [
+            'ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+            '-of', 'default=noprint_wrappers=1:nokey=1', video_path
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        return float(result.stdout.strip())
+    except Exception:
+        return 0.0
+
+
+def get_video_metadata(video_path: str):
+    """Get all video metadata in a single ffprobe call."""
+    import json
+    result = {"duration": 0.0, "resolution": (0, 0), "has_audio": False}
+    try:
+        cmd = [
+            'ffprobe', '-v', 'error',
+            '-show_entries', 'format=duration:stream=width,height,codec_type',
+            '-of', 'json', video_path
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        data = json.loads(proc.stdout)
+
+        if "format" in data and "duration" in data["format"]:
+            result["duration"] = float(data["format"]["duration"])
+
+        if "streams" in data:
+            for stream in data["streams"]:
+                if stream.get("codec_type") == "video":
+                    result["resolution"] = (stream.get("width", 0), stream.get("height", 0))
+                elif stream.get("codec_type") == "audio":
+                    result["has_audio"] = True
+    except Exception:
+        pass
+    return result
+
+
+def has_audio_stream(video_path: str) -> bool:
+    """Check if video has an audio stream."""
+    try:
+        cmd = [
+            'ffprobe', '-v', 'error', '-select_streams', 'a',
+            '-show_entries', 'stream=codec_type', '-of', 'csv=p=0', video_path
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        return 'audio' in result.stdout.lower()
+    except Exception:
+        return False
 
 
 def extract_audio_sample(video_path: str, start_time: float, duration: float = AUDIO_SAMPLE_DURATION) -> Optional[np.ndarray]:

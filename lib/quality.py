@@ -1,13 +1,11 @@
 import os
 from typing import Dict, Tuple
-from datetime import datetime
+from lib.audio import get_video_metadata
+from lib.features import compute_file_hash
 
 
 def extract_video_metadata(video_path: str) -> Dict:
     """Extract full video metadata for quality scoring."""
-    from dedup_ffmpeg import get_video_resolution, get_video_metadata
-    from dedup_features import compute_file_hash
-    
     meta = {
         "path": video_path,
         "filename": os.path.basename(video_path),
@@ -84,7 +82,7 @@ def calculate_quality_score(metadata: Dict) -> Tuple[int, str]:
     return score, "+".join(reasons) if reasons else "none"
 
 
-def analyze_duplicate_set(videos_with_metadata: list) -> Dict[str, Dict]:
+def analyze_duplicate_set(videos_with_metadata) -> Dict[str, Dict]:
     """Analyze a duplicate set and determine KEEP/DELETE for each video."""
     results = {}
     if not videos_with_metadata:
@@ -92,7 +90,7 @@ def analyze_duplicate_set(videos_with_metadata: list) -> Dict[str, Dict]:
     
     best_path = None
     best_score = -1
-    best_width, best_height, best_fps, best_bitrate = 0, 0, 0, 0
+    best_width, best_height, best_bitrate = 0, 0, 0
     
     for video_path, metadata in videos_with_metadata:
         score, reason = calculate_quality_score(metadata)
@@ -114,7 +112,6 @@ def analyze_duplicate_set(videos_with_metadata: list) -> Dict[str, Dict]:
             best_score = score
             best_path = video_path
             best_width, best_height = width, height
-            best_fps = 30
             best_bitrate = bitrate
     
     for video_path in results:
@@ -127,21 +124,18 @@ def analyze_duplicate_set(videos_with_metadata: list) -> Dict[str, Dict]:
             vi = result["metadata"].get("video", {})
             v_width = vi.get("width", 0)
             v_height = vi.get("height", 0)
-            v_fps = 30
-            v_codec = "unknown"
-            v_brate = 0
             
             file_size = result["metadata"].get("file_size_bytes", 0)
             duration = vi.get("duration", 0)
-            v_brate = (file_size * 8) / (duration * 1000) if duration > 0 else 0
+            v_bitrate = (file_size * 8) / (duration * 1000) if duration > 0 else 0
 
             reason = (f"Significantly lower quality (score {score} vs {best_score})"
                       if best_score - score >= 30 else
                       f"Lower quality (score {score} vs {best_score})")
             if v_width * v_height < best_width * best_height:
                 reason += f"; lower resolution ({v_width}x{v_height} vs {best_width}x{best_height})"
-            if v_brate < best_bitrate * 0.7 and v_brate > 0:
-                reason += f"; lower bitrate ({int(v_brate)} vs {int(best_bitrate)} kbps)"
+            if v_bitrate < best_bitrate * 0.7 and v_bitrate > 0:
+                reason += f"; lower bitrate ({int(v_bitrate)} vs {int(best_bitrate)} kbps)"
 
             result["recommendation"] = "DELETE"
             result["reason"] = reason

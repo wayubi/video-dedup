@@ -3,7 +3,22 @@ import subprocess
 from typing import List, Tuple
 from PIL import Image
 import imagehash
-from dedup_config import TEMP_DIR, NUM_VISUAL_ANCHORS, VISUAL_FRAME_THRESHOLD
+from lib.config import TEMP_DIR, NUM_VISUAL_ANCHORS, VISUAL_FRAME_THRESHOLD
+
+
+def get_video_resolution(video_path: str) -> Tuple[int, int]:
+    """Get video resolution as (width, height)."""
+    try:
+        cmd = ['ffprobe', '-v', 'error', '-select_streams', 'v:0',
+              '-show_entries', 'stream=width,height',
+              '-of', 'default=noprint_wrappers=1:nokey=1', video_path]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        lines = result.stdout.strip().split('\n')
+        width = int(lines[0]) if lines and lines[0].isdigit() else 0
+        height = int(lines[1]) if len(lines) > 1 and lines[1].isdigit() else 0
+        return width, height
+    except Exception:
+        return 0, 0
 
 
 def extract_visual_samples(video_path: str, duration: float) -> List[Image.Image]:
@@ -27,6 +42,14 @@ def extract_visual_samples(video_path: str, duration: float) -> List[Image.Image
         except Exception:
             pass
     return images
+
+
+def extract_visual_samples_batch(video_path: str, duration: float, temp_dir: str):
+    """Extract visual samples for batched processing."""
+    images = extract_visual_samples(video_path, duration)
+    if not images:
+        return []
+    return [[(0.0, img)] for img in images]
 
 
 def generate_visual_fingerprint(clusters: List[List[Tuple[float, Image.Image]]]) -> List[List[Tuple[float, List[str]]]]:
@@ -135,11 +158,3 @@ def compare_visual_fingerprints(hashes1: List[List[Tuple[float, List[str]]]], ha
             best_count += 1
 
     return best_count / max(n1, n2), verbose_lines
-
-
-def extract_visual_samples_batch(video_path: str, duration: float, temp_dir: str):
-    """Extract visual samples for batched processing."""
-    images = extract_visual_samples(video_path, duration)
-    if not images:
-        return []
-    return [[(0.0, img)] for img in images]

@@ -6,40 +6,30 @@ import json
 import shutil
 import tempfile
 import argparse
-from typing import List, Dict, Any
-from datetime import datetime
+from typing import List
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import numpy as np
-from tqdm import tqdm
 
-from dedup_config import (
+from lib.config import (
     VideoFeatures, TEMP_DIR, LENGTH_TOLERANCE, AUDIO_THRESHOLD, AUDIO_REQUIRED_MATCHES,
-    NUM_AUDIO_ANCHORS, VISUAL_FRAME_THRESHOLD, VISUAL_REQUIRED_MATCHES, NUM_VISUAL_ANCHORS,
-    FORCE_COMPARE_THRESHOLD
+    VISUAL_FRAME_THRESHOLD
 )
-from dedup_utils import (
-    format_bytes, scan_deduped_folders, load_video_metadata, get_associated_video_path,
+from lib.utils import (
+    format_bytes, scan_deduped_folders, get_associated_video_path,
     find_delete_files, find_all_files, delete_file_pair, restore_file, cleanup_empty_deduped_folders
 )
-from dedup_scanner import find_videos
-from dedup_features import (
-    load_cache_index, save_cache_index, load_cached_features, prune_cache,
-    save_features_to_cache, extract_all_features
-)
-from dedup_ffmpeg import get_video_duration, get_video_resolution
-from dedup_audio import compare_audio_fingerprints
-from dedup_visual import generate_visual_fingerprint, compare_visual_fingerprints
-from dedup_visual import extract_visual_samples_batch
-from dedup_quality import extract_video_metadata, calculate_quality_score, analyze_duplicate_set
-from dedup_upscaling import detect_upscaling
-from dedup_config import UPSCALING_CONFIDENCE_THRESHOLD, MIN_UPSCALING_ANALYSIS_RESOLUTION
+from lib.features import find_videos, prune_cache, extract_all_features
+from lib.audio import compare_audio_fingerprints
+from lib.visual import generate_visual_fingerprint, compare_visual_fingerprints, extract_visual_samples_batch
+from lib.quality import extract_video_metadata, calculate_quality_score, analyze_duplicate_set
+from lib.features import detect_upscaling
+from lib.config import UPSCALING_CONFIDENCE_THRESHOLD, MIN_UPSCALING_ANALYSIS_RESOLUTION
 
 TEMP_DIR = None
 
 
-def compare_features(f1: VideoFeatures, f2: VideoFeatures, verbose: bool = False) -> tuple:
-    """Compare two videos using precomputed features."""
+def compare_features(f1: VideoFeatures, f2: VideoFeatures, verbose: bool = False):
     v1_name = os.path.basename(f1.get("path", ""))
     v2_name = os.path.basename(f2.get("path", ""))
     dur1, dur2 = f1.get("duration", 0), f2.get("duration", 0)
@@ -89,8 +79,7 @@ def compare_features(f1: VideoFeatures, f2: VideoFeatures, verbose: bool = False
     return False, "no_match", verbose_lines
 
 
-def find_duplicate_groups_with_features(features_list: List[VideoFeatures], verbose: bool = False) -> List[List[str]]:
-    """Find duplicate groups from feature list."""
+def find_duplicate_groups_with_features(features_list, verbose=False):
     n = len(features_list)
     if n < 2:
         return []
@@ -117,9 +106,7 @@ def find_duplicate_groups_with_features(features_list: List[VideoFeatures], verb
     return groups
 
 
-def organize_duplicates(directory: str, duplicate_groups: List[List[str]],
-                       dry_run: bool = False, create_markers: bool = False) -> None:
-    """Move duplicates to __deduped folder."""
+def organize_duplicates(directory, duplicate_groups, dry_run=False, create_markers=False):
     if not duplicate_groups:
         print("No duplicates found!")
         return
@@ -132,11 +119,7 @@ def organize_duplicates(directory: str, duplicate_groups: List[List[str]],
         folder_path = os.path.join(deduped_base, folder_name)
         print(f"\n{folder_name}: {len(group)} videos")
 
-        videos_with_metadata = []
-        for video_path in group:
-            print(f"  Extracting metadata: {os.path.basename(video_path)}")
-            videos_with_metadata.append((video_path, extract_video_metadata(video_path)))
-
+        videos_with_metadata = [(v, extract_video_metadata(v)) for v in group]
         analysis_results = analyze_duplicate_set(videos_with_metadata)
 
         for video_path in group:
@@ -186,8 +169,7 @@ def organize_duplicates(directory: str, duplicate_groups: List[List[str]],
                     print(f"  ERROR moving {video_path}: {e}")
 
 
-def run_scan(args) -> None:
-    """Run the scan mode."""
+def run_scan(args):
     global TEMP_DIR
     TEMP_DIR = tempfile.mkdtemp(prefix="video_dedup_")
 
@@ -253,10 +235,8 @@ def run_scan(args) -> None:
             'directory': base_dir,
             'total_videos_analyzed': len(features_list),
             'duplicate_sets_found': len(duplicate_groups),
-            'sets': [
-                {'set_id': i + 1, 'videos': [{'path': v} for v in group]}
-                for i, group in enumerate(duplicate_groups)
-            ],
+            'sets': [{'set_id': i + 1, 'videos': [{'path': v} for v in group]}
+                    for i, group in enumerate(duplicate_groups)],
         }
 
         report_path = os.path.join(base_dir, args.report)
@@ -271,8 +251,7 @@ def run_scan(args) -> None:
             shutil.rmtree(TEMP_DIR)
 
 
-def run_delete(args) -> None:
-    """Run the delete mode."""
+def run_delete(args):
     base_dir = os.path.abspath(args.directory)
     sets = scan_deduped_folders(base_dir)
 
@@ -297,16 +276,13 @@ def run_delete(args) -> None:
     print(f"\nFound {len(all_candidates)} files to delete")
     print(f"Total space: {format_bytes(total_size)}")
 
-    deleted = []
     for set_path, video_path, json_path, metadata in all_candidates:
         if args.confirm:
             success, _ = delete_file_pair(video_path, json_path)
             if success:
                 print(f"  Deleted: {os.path.basename(video_path)}")
-                deleted.append(video_path)
         else:
             print(f"  Would delete: {os.path.basename(video_path)}")
-            deleted.append(video_path)
 
     if not args.confirm:
         print("\nDRY RUN - no files deleted. Use --confirm to delete.")
@@ -315,8 +291,7 @@ def run_delete(args) -> None:
     print(f"Cleaned up {len(removed)} folders")
 
 
-def run_restore(args) -> None:
-    """Run the restore mode."""
+def run_restore(args):
     base_dir = os.path.abspath(args.directory)
     sets = scan_deduped_folders(base_dir)
 
@@ -354,17 +329,15 @@ def run_restore(args) -> None:
     print(f"\nRestored {len(restored)} files, cleaned up {len(removed)} folders")
 
 
-def main() -> None:
+def main():
     parser = argparse.ArgumentParser(description='Video Duplicate Detector')
     parser.add_argument('directory', help='Directory containing videos')
     
-    # Mode selection
     mode_group = parser.add_mutually_exclusive_group(required=False)
     mode_group.add_argument('--scan', action='store_true', help='Scan for duplicates (default)')
     mode_group.add_argument('--delete', action='store_true', help='Delete candidates')
     mode_group.add_argument('--restore', action='store_true', help='Restore files')
     
-    # Scan options
     parser.add_argument('--dry-run', action='store_true', help='Show without moving')
     parser.add_argument('--report', type=str, default='duplicates_report.json', help='Report path')
     parser.add_argument('--detect-upscaling', action='store_true', help='Detect upscaling')
@@ -377,13 +350,10 @@ def main() -> None:
     parser.add_argument('-v', '--verbose', action='store_true', help='Verbose')
     parser.add_argument('--prune-cache', action='store_true', help='Prune cache')
     parser.add_argument('--wipe-cache', action='store_true', help='Wipe cache')
-    
-    # Delete/restore options
     parser.add_argument('--confirm', action='store_true', help='Confirm delete')
     
     args = parser.parse_args()
     
-    # Default to scan mode
     if not (args.delete or args.restore):
         args.scan = True
     

@@ -18,16 +18,13 @@ def format_bytes(bytes_val: float) -> str:
 def scan_deduped_folders(base_dir: str) -> List[str]:
     """Scan __deduped folder for all duplicate set folders."""
     deduped_path = os.path.join(base_dir, "__deduped")
-    
     if not os.path.exists(deduped_path):
         return []
-    
     sets = []
     for item in os.listdir(deduped_path):
         item_path = os.path.join(deduped_path, item)
         if os.path.isdir(item_path) and item.startswith("duplicate_set_"):
             sets.append(item_path)
-    
     return sorted(sets)
 
 
@@ -55,30 +52,25 @@ def get_associated_video_path(json_path: str) -> Optional[str]:
 def find_delete_files(set_path: str) -> List[Tuple[str, str, str, Dict]]:
     """Find all DELETE files in a duplicate set."""
     candidates = []
-    
     for file in os.listdir(set_path):
         if file.endswith('.json'):
             json_path = os.path.join(set_path, file)
             metadata = load_video_metadata(json_path)
-            
             if metadata and metadata.get('recommendation') == 'DELETE':
                 video_path = get_associated_video_path(json_path)
                 if video_path:
                     marker_path = video_path + '.delete' if os.path.exists(video_path + '.delete') else None
                     candidates.append((video_path, json_path, marker_path, metadata))
-    
     return candidates
 
 
 def find_all_files(set_path: str) -> List[Tuple[str, str, Optional[str], Dict]]:
     """Find all files in a duplicate set."""
     all_files = []
-    
     for file in os.listdir(set_path):
         if file.endswith('.json'):
             json_path = os.path.join(set_path, file)
             metadata = load_video_metadata(json_path)
-            
             if metadata:
                 video_path = get_associated_video_path(json_path)
                 if video_path:
@@ -88,7 +80,6 @@ def find_all_files(set_path: str) -> List[Tuple[str, str, Optional[str], Dict]]:
                     elif os.path.exists(video_path + '.delete'):
                         marker_path = video_path + '.delete'
                     all_files.append((video_path, json_path, marker_path, metadata))
-    
     return all_files
 
 
@@ -136,13 +127,12 @@ def restore_file(video_path: str, json_path: str, marker_path: Optional[str], me
             os.remove(marker_path)
         
         return True, destination, "", collision_handled
-        
     except Exception as e:
         return False, "", str(e), False
 
 
 def cleanup_empty_deduped_folders(base_dir: str) -> Tuple[List[str], List[str]]:
-    """Clean up empty duplicate set folders. Returns (removed, skipped)."""
+    """Clean up empty duplicate set folders."""
     removed = []
     skipped = []
     
