@@ -159,9 +159,8 @@ def save_features_to_cache(features: VideoFeatures) -> None:
     cache_key = get_cache_key(video_path)
     if not cache_key:
         return
-    index = load_cache_index()
     stat = os.stat(video_path)
-    index[cache_key] = {
+    entry = {
         "path": os.path.abspath(video_path),
         "size": stat.st_size,
         "mtime": stat.st_mtime,
@@ -173,7 +172,28 @@ def save_features_to_cache(features: VideoFeatures) -> None:
         "visual_hashes": features.get("visual_hashes", []),
         "audio_fingerprints": features.get("audio_fingerprints", []),
     }
-    save_cache_index(index)
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    for attempt in range(5):
+        try:
+            with open(CACHE_LOCK, 'w') as lock_file:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+                try:
+                    index = {}
+                    if os.path.exists(CACHE_INDEX):
+                        try:
+                            with open(CACHE_INDEX, 'r') as f:
+                                index = json.load(f)
+                        except (json.JSONDecodeError, IOError):
+                            pass
+                    index[cache_key] = entry
+                    with open(CACHE_INDEX, 'w') as f:
+                        json.dump(index, f, indent=2)
+                finally:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            return
+        except (IOError, OSError):
+            if attempt < 4:
+                time.sleep(0.1 * (attempt + 1))
 
 
 def compute_file_hash(video_path: str) -> str:
@@ -327,14 +347,14 @@ def calculate_edge_sharpness_score(image):
         return 0.0
 
 
-def calculate_multiscale_score(video_path: str, width: int, height: int) -> float:
+def calculate_multiscale_score(video_path: str, width: int, height: int, temp_dir: Optional[str] = None) -> float:
     try:
-        if TEMP_DIR is None or max(width, height) < 1920:
+        if temp_dir is None or max(width, height) < 1920:
             return 0.0
         duration = get_video_duration(video_path)
         timestamp = duration * 0.5
-        temp_orig = os.path.join(TEMP_DIR, f"upscale_orig_{os.path.basename(video_path)}.jpg")
-        temp_down = os.path.join(TEMP_DIR, f"upscale_down_{os.path.basename(video_path)}.jpg")
+        temp_orig = os.path.join(temp_dir, f"upscale_orig_{os.path.basename(video_path)}.jpg")
+        temp_down = os.path.join(temp_dir, f"upscale_down_{os.path.basename(video_path)}.jpg")
 
         subprocess.run(['ffmpeg', '-y', '-ss', str(timestamp), '-i', video_path,
                         '-vframes', '1', '-q:v', '2', temp_orig],
@@ -368,19 +388,19 @@ def calculate_multiscale_score(video_path: str, width: int, height: int) -> floa
         return 0.0
 
 
-def detect_upscaling(video_path: str):
+def detect_upscaling(video_path: str, temp_dir: Optional[str] = None):
     from lib.config import MIN_UPSCALING_ANALYSIS_RESOLUTION
     width, height = get_video_resolution(video_path)
     if max(width, height) < MIN_UPSCALING_ANALYSIS_RESOLUTION:
         return False, 0.0, {"skipped": True, "resolution": (width, height)}
     try:
-        if TEMP_DIR is None:
+        if temp_dir is None:
             return False, 0.0, {"skipped": True}
         duration = get_video_duration(video_path)
         if duration <= 0:
             return False, 0.0, {"skipped": True}
         timestamp = duration * 0.1
-        temp_frame = os.path.join(TEMP_DIR, f"upscaling_{os.path.basename(video_path)}.jpg")
+        temp_frame = os.path.join(temp_dir, f"upscaling_{os.path.basename(video_path)}.jpg")
         subprocess.run(['ffmpeg', '-y', '-ss', str(timestamp), '-i', video_path,
                         '-vframes', '1', '-q:v', '2', temp_frame],
                        capture_output=True, timeout=15)
@@ -393,7 +413,7 @@ def detect_upscaling(video_path: str):
             os.remove(temp_frame)
             freq_score = calculate_frequency_score(arr)
             edge_score = calculate_edge_sharpness_score(arr)
-            multi_score = calculate_multiscale_score(video_path, width, height)
+            multi_score = calculate_multiscale_score(video_path, width, height, temp_dir)
             scores = {"frequency": freq_score, "edge": edge_score, "multiscale": multi_score}
             avg_score = (freq_score + edge_score + multi_score) / 3
             is_upscaled = avg_score >= 0.65

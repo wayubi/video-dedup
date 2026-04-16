@@ -12,7 +12,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 import numpy as np
 
 from lib.config import (
-    VideoFeatures, TEMP_DIR, LENGTH_TOLERANCE, AUDIO_THRESHOLD, AUDIO_REQUIRED_MATCHES,
+    VideoFeatures, LENGTH_TOLERANCE, AUDIO_THRESHOLD, AUDIO_REQUIRED_MATCHES,
     VISUAL_FRAME_THRESHOLD
 )
 from lib.utils import (
@@ -20,7 +20,7 @@ from lib.utils import (
     find_delete_files, find_all_files, delete_file_pair, restore_file, cleanup_empty_deduped_folders
 )
 from lib.features import find_videos, prune_cache, extract_all_features
-from lib.audio import compare_audio_fingerprints
+from lib.audio import compare_audio_fingerprints, compare_audio_clusters
 from lib.visual import generate_visual_fingerprint, compare_visual_fingerprints, extract_visual_samples_batch
 from lib.quality import extract_video_metadata, calculate_quality_score, analyze_duplicate_set
 from lib.features import detect_upscaling
@@ -107,19 +107,6 @@ def compare_features(f1: VideoFeatures, f2: VideoFeatures, verbose: bool = False
         if fps1 and fps2:
             if verbose:
                 verbose_lines.append(f"    Stage 4 (Audio): {len(fps1)} anchor clusters")
-
-            def compare_audio_clusters(cluster1, cluster2):
-                best_sim = 0.0
-                best_i, best_j = 0, 0
-                for i, (ts1, fp1_list) in enumerate(cluster1):
-                    for j, (ts2, fp2_list) in enumerate(cluster2):
-                        fp1_arr = np.array(fp1_list)
-                        fp2_arr = np.array(fp2_list)
-                        sim = compare_audio_fingerprints(fp1_arr, fp2_arr)
-                        if sim > best_sim:
-                            best_sim = sim
-                            best_i, best_j = i, j
-                return best_sim, best_i, best_j
 
             matches = 0
             num_anchors = min(len(fps1), len(fps2))
@@ -430,7 +417,7 @@ def run_scan(args):
             print("=" * 60)
             total = len(video_paths)
             for idx, path in enumerate(video_paths):
-                is_upscaled, confidence, details = detect_upscaling(path)
+                is_upscaled, confidence, details = detect_upscaling(path, TEMP_DIR)
                 upscaling_results[path] = {
                     "is_upscaled": is_upscaled,
                     "confidence": round(confidence, 3),
@@ -543,7 +530,7 @@ def run_delete(args):
     print(f"\nFound {len(all_candidates)} files to delete")
     print(f"Total space: {format_bytes(total_size)}")
 
-    for set_path, video_path, json_path, metadata in all_candidates:
+    for set_path, video_path, json_path, marker_path in all_candidates:
         if args.confirm:
             success, _ = delete_file_pair(video_path, json_path)
             if success:

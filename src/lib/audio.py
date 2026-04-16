@@ -134,6 +134,19 @@ def generate_audio_fingerprint(audio_data: np.ndarray) -> np.ndarray:
     return np.array([])
 
 
+def compare_audio_clusters(cluster1, cluster2):
+    """Find the best-matching fingerprint pair across two anchor clusters."""
+    best_sim = 0.0
+    best_i, best_j = 0, 0
+    for i, (ts1, fp1_list) in enumerate(cluster1):
+        for j, (ts2, fp2_list) in enumerate(cluster2):
+            sim = compare_audio_fingerprints(np.array(fp1_list), np.array(fp2_list))
+            if sim > best_sim:
+                best_sim = sim
+                best_i, best_j = i, j
+    return best_sim, best_i, best_j
+
+
 def compare_audio_fingerprints(fp1: np.ndarray, fp2: np.ndarray) -> float:
     """Compare two audio fingerprints using sliding cross-correlation."""
     if len(fp1) == 0 or len(fp2) == 0:
