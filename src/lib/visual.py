@@ -3,7 +3,7 @@ import subprocess
 from typing import List, Tuple
 from PIL import Image
 import imagehash
-from lib.config import TEMP_DIR, NUM_VISUAL_ANCHORS, VISUAL_FRAME_THRESHOLD
+from lib.config import NUM_VISUAL_ANCHORS, VISUAL_FRAME_THRESHOLD
 
 
 def get_video_resolution(video_path: str) -> Tuple[int, int]:
@@ -21,35 +21,63 @@ def get_video_resolution(video_path: str) -> Tuple[int, int]:
         return 0, 0
 
 
-def extract_visual_samples(video_path: str, duration: float) -> List[Image.Image]:
-    """Extract frame samples from video at specific timestamps."""
-    if TEMP_DIR is None:
-        return []
-    images = []
-    points = [(i + 0.5) / NUM_VISUAL_ANCHORS * 0.9 + 0.05 for i in range(NUM_VISUAL_ANCHORS)]
-    for point in points:
-        timestamp = duration * point
-        try:
-            temp_frame = os.path.join(TEMP_DIR, f"frame_{os.path.basename(video_path)}_{point}.jpg")
-            cmd = [
-                'ffmpeg', '-y', '-ss', str(timestamp), '-i', video_path,
-                '-vframes', '1', '-q:v', '2', temp_frame
-            ]
-            subprocess.run(cmd, capture_output=True, timeout=15)
-            if os.path.exists(temp_frame):
-                images.append(Image.open(temp_frame))
-                os.remove(temp_frame)
-        except Exception:
-            pass
-    return images
-
-
 def extract_visual_samples_batch(video_path: str, duration: float, temp_dir: str):
-    """Extract visual samples for batched processing."""
-    images = extract_visual_samples(video_path, duration)
-    if not images:
+    """Extract frame clusters from video around anchor points."""
+    if temp_dir is None or duration <= 0:
         return []
-    return [[(0.0, img)] for img in images]
+
+    from lib.config import SHORT_VIDEO_THRESHOLD, SHORT_SKIP_FIRST, SHORT_CLUSTER_SECONDS, VISUAL_CLUSTER_SECONDS, NUM_VISUAL_ANCHORS
+
+    is_short_video = duration < SHORT_VIDEO_THRESHOLD
+    effective_start = SHORT_SKIP_FIRST if is_short_video else 10
+    cluster_seconds = SHORT_CLUSTER_SECONDS if is_short_video else VISUAL_CLUSTER_SECONDS
+    num_anchors = NUM_VISUAL_ANCHORS
+
+    available = duration - effective_start
+
+    if available <= 0:
+        return []
+
+    max_cluster = min(cluster_seconds, available / (num_anchors * 2))
+
+    clusters = []
+    base_name = os.path.basename(video_path)
+
+    anchor_points = [(i + 0.5) / num_anchors * 0.9 + 0.05 for i in range(num_anchors)]
+
+    for anchor_idx, anchor_point in enumerate(anchor_points):
+        anchor_timestamp = effective_start + (available * anchor_point)
+        cluster = []
+
+        offsets = [0, -max_cluster, max_cluster]
+
+        for offset_idx, offset in enumerate(offsets):
+            timestamp = anchor_timestamp + offset
+            if timestamp < 0:
+                continue
+            if timestamp > duration:
+                continue
+            if abs(offset) > 0 and abs(offset) < 0.1:
+                continue
+
+            try:
+                temp_frame = os.path.join(temp_dir, f"frame_{base_name}_{anchor_idx}_{offset_idx}.jpg")
+                cmd = [
+                    'ffmpeg', '-y', '-ss', str(timestamp), '-i', video_path,
+                    '-vframes', '1', '-q:v', '2', temp_frame
+                ]
+                subprocess.run(cmd, capture_output=True, timeout=15)
+                if os.path.exists(temp_frame):
+                    img = Image.open(temp_frame)
+                    cluster.append((timestamp, img))
+                    os.remove(temp_frame)
+            except Exception:
+                pass
+
+        if cluster:
+            clusters.append(cluster)
+
+    return clusters
 
 
 def generate_visual_fingerprint(clusters: List[List[Tuple[float, Image.Image]]]) -> List[List[Tuple[float, List[str]]]]:
@@ -151,10 +179,10 @@ def compare_visual_fingerprints(hashes1: List[List[Tuple[float, List[str]]]], ha
                     sim = frame_similarity(h1, h2)
                     verbose_lines.append(f"        Frame {i}a: ts={ts1:.1f}s vs Frame {j}a: ts={ts2:.1f}s: similarity={sim:.4f}")
             best_ts = hashes2[best_cluster_idx][best_j_in_cluster][0] if hashes2[best_cluster_idx] else 0
-            result = "PASS" if best_cluster_sim >= VISUAL_FRAME_THRESHOLD else "FAIL"
+            result = "PASS" if best_cluster_sim > VISUAL_FRAME_THRESHOLD else "FAIL"
             verbose_lines.append(f"        Best for frame {anchor_idx}: frame {best_j_in_cluster}a ts={best_ts:.1f}s similarity={best_cluster_sim:.4f} (threshold={VISUAL_FRAME_THRESHOLD:.4f}, result={result})")
 
-        if best_cluster_sim >= VISUAL_FRAME_THRESHOLD:
+        if best_cluster_sim > VISUAL_FRAME_THRESHOLD:
             best_count += 1
 
     return best_count / max(n1, n2), verbose_lines

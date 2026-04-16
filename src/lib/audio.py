@@ -61,12 +61,13 @@ def has_audio_stream(video_path: str) -> bool:
         return False
 
 
-def extract_audio_sample(video_path: str, start_time: float, duration: float = AUDIO_SAMPLE_DURATION) -> Optional[np.ndarray]:
+def extract_audio_sample(video_path: str, start_time: float, duration: float = AUDIO_SAMPLE_DURATION, temp_dir: Optional[str] = None) -> Optional[np.ndarray]:
     """Extract audio sample from video at a specific time, resampled to 16 kHz mono."""
-    if TEMP_DIR is None:
+    use_temp_dir = temp_dir if temp_dir is not None else TEMP_DIR
+    if use_temp_dir is None:
         return None
     try:
-        temp_wav = os.path.join(TEMP_DIR, f"audio_{os.path.basename(video_path)}_{start_time}.wav")
+        temp_wav = os.path.join(use_temp_dir, f"audio_{os.path.basename(video_path)}_{start_time}.wav")
         cmd = [
             'ffmpeg', '-y', '-ss', str(start_time), '-t', str(duration),
             '-i', video_path, '-vn', '-acodec', 'pcm_s16le', '-ar', '16000', '-ac', '1',

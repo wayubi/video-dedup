@@ -4,6 +4,7 @@ import fcntl
 import time
 import hashlib
 import tempfile
+import subprocess
 from typing import Dict, Optional, List
 from pathlib import Path
 
@@ -192,78 +193,96 @@ def compute_file_hash(video_path: str) -> str:
 
 
 def extract_all_features(video_path: str, temp_dir: Optional[str] = None) -> VideoFeatures:
-    cached = load_cached_features(video_path)
-    if cached and cached.get("duration", 0) > 0:
-        return cached
+    import sys
+    import traceback
+    
+    try:
+        cached = load_cached_features(video_path)
+        if cached and cached.get("duration", 0) > 0:
+            if cached.get("audio_fingerprints") and cached.get("visual_hashes"):
+                return cached
 
-    effective_temp_dir = temp_dir if temp_dir is not None else TEMP_DIR
-    if effective_temp_dir is None:
-        effective_temp_dir = tempfile.mkdtemp(prefix="video_dedup_")
-    if not os.path.exists(effective_temp_dir):
-        os.makedirs(effective_temp_dir, exist_ok=True)
+        effective_temp_dir = temp_dir if temp_dir is not None else TEMP_DIR
+        if effective_temp_dir is None:
+            effective_temp_dir = tempfile.mkdtemp(prefix="video_dedup_")
+        if not os.path.exists(effective_temp_dir):
+            os.makedirs(effective_temp_dir, exist_ok=True)
 
-    features: VideoFeatures = {
-        "path": video_path,
-        "duration": 0.0,
-        "resolution": (0, 0),
-        "has_audio": False,
-        "audio_fingerprints": [],
-        "visual_hashes": [],
-        "file_size": os.path.getsize(video_path) if os.path.exists(video_path) else 0,
-        "mtime": os.path.getmtime(video_path) if os.path.exists(video_path) else 0,
-        "file_hash": compute_file_hash(video_path),
-    }
+        features: VideoFeatures = {
+            "path": video_path,
+            "duration": 0.0,
+            "resolution": (0, 0),
+            "has_audio": False,
+            "audio_fingerprints": [],
+            "visual_hashes": [],
+            "file_size": os.path.getsize(video_path) if os.path.exists(video_path) else 0,
+            "mtime": os.path.getmtime(video_path) if os.path.exists(video_path) else 0,
+            "file_hash": compute_file_hash(video_path),
+        }
 
-    metadata = get_video_metadata(video_path)
-    features["duration"] = metadata.get("duration", 0.0)
-    features["resolution"] = metadata.get("resolution", (0, 0))
-    features["has_audio"] = metadata.get("has_audio", False)
+        metadata = get_video_metadata(video_path)
+        features["duration"] = metadata.get("duration", 0.0)
+        features["resolution"] = metadata.get("resolution", (0, 0))
+        features["has_audio"] = metadata.get("has_audio", False)
 
-    if features["duration"] <= 0:
+        if features["duration"] <= 0:
+            return features
+
+        duration = features["duration"]
+
+        if features["has_audio"]:
+            is_short_video = duration < SHORT_VIDEO_THRESHOLD
+            effective_skip = SHORT_SKIP_FIRST if is_short_video else SKIP_FIRST_SECONDS
+            cluster_seconds = SHORT_CLUSTER_SECONDS if is_short_video else AUDIO_CLUSTER_SECONDS
+            num_anchors = NUM_AUDIO_ANCHORS
+
+            available = duration - effective_skip
+
+            if available > AUDIO_SAMPLE_DURATION:
+                max_cluster = min(cluster_seconds, available / (num_anchors * 2))
+                anchor_points = [(i + 0.5) / num_anchors * 0.9 + 0.05 for i in range(num_anchors)]
+
+                for anchor_idx, anchor_point in enumerate(anchor_points):
+                    anchor_timestamp = effective_skip + (available * anchor_point)
+                    cluster = []
+
+                    offsets = [0, -max_cluster, max_cluster]
+                    for offset_idx, offset in enumerate(offsets):
+                        timestamp = anchor_timestamp + offset
+                        if timestamp < 0:
+                            continue
+                        if timestamp + AUDIO_SAMPLE_DURATION > duration:
+                            continue
+                        if abs(offset) > 0 and abs(offset) < 0.5:
+                            continue
+
+                        try:
+                            audio_data = extract_audio_sample(video_path, timestamp, AUDIO_SAMPLE_DURATION, effective_temp_dir)
+                            if audio_data is not None:
+                                fp = generate_audio_fingerprint(audio_data)
+                                if len(fp) > 0:
+                                    cluster.append((timestamp, fp.tolist()))
+                        except Exception as e:
+                            print(f"[ERROR] Audio extraction failed at {timestamp}: {e}", file=sys.stderr)
+
+                    if cluster:
+                        features["audio_fingerprints"].append(cluster)
+
+        try:
+            clusters = extract_visual_samples_batch(video_path, duration, effective_temp_dir)
+            if clusters:
+                features["visual_hashes"] = generate_visual_fingerprint(clusters)
+        except Exception as e:
+            print(f"[ERROR] Visual extraction failed: {e}", file=sys.stderr)
+
+        if features.get("duration", 0) > 0:
+            save_features_to_cache(features)
+
         return features
-
-    duration = features["duration"]
-
-    if features["has_audio"]:
-        is_short_video = duration < SHORT_VIDEO_THRESHOLD
-        effective_skip = SHORT_SKIP_FIRST if is_short_video else SKIP_FIRST_SECONDS
-        cluster_seconds = SHORT_CLUSTER_SECONDS if is_short_video else AUDIO_CLUSTER_SECONDS
-        num_anchors = NUM_AUDIO_ANCHORS
-
-        available = duration - effective_skip
-        if available > AUDIO_SAMPLE_DURATION:
-            max_cluster = min(cluster_seconds, available / (num_anchors * 2))
-            anchor_points = [(i + 0.5) / num_anchors * 0.9 + 0.05 for i in range(num_anchors)]
-
-            for anchor_point in anchor_points:
-                anchor_timestamp = effective_skip + (available * anchor_point)
-                cluster = []
-
-                offsets = [0, -max_cluster, max_cluster]
-                for offset in offsets:
-                    timestamp = anchor_timestamp + offset
-                    if timestamp < 0 or timestamp + AUDIO_SAMPLE_DURATION > duration:
-                        continue
-                    if abs(offset) > 0 and abs(offset) < 0.5:
-                        continue
-
-                    audio_data = extract_audio_sample(video_path, timestamp, AUDIO_SAMPLE_DURATION)
-                    if audio_data is not None:
-                        fp = generate_audio_fingerprint(audio_data)
-                        if len(fp) > 0:
-                            cluster.append((timestamp, fp.tolist()))
-
-                if cluster:
-                    features["audio_fingerprints"].append(cluster)
-
-    clusters = extract_visual_samples_batch(video_path, duration, effective_temp_dir)
-    if clusters:
-        features["visual_hashes"] = generate_visual_fingerprint(clusters)
-
-    if features.get("duration", 0) > 0:
-        save_features_to_cache(features)
-
-    return features
+    except Exception as e:
+        print(f"[ERROR] extract_all_features failed for {video_path}: {e}", file=sys.stderr)
+        print(traceback.format_exc(), file=sys.stderr)
+        raise
 
 
 # Upscaling detection

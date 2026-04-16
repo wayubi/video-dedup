@@ -128,6 +128,9 @@ def compare_features(f1: VideoFeatures, f2: VideoFeatures, verbose: bool = False
                 cluster1 = fps1[anchor_idx]
                 anchor_ts = cluster1[0][0] if cluster1 else 0
 
+                if verbose:
+                    verbose_lines.append(f"      Sample {anchor_idx}: anchor={anchor_ts:.1f}s")
+
                 best_cluster_sim = 0.0
                 best_cluster_idx = anchor_idx
                 best_i_in_cluster, best_j_in_cluster = 0, 0
@@ -135,6 +138,7 @@ def compare_features(f1: VideoFeatures, f2: VideoFeatures, verbose: bool = False
                 lo = max(0, anchor_idx - 3)
                 hi = min(len(fps2), anchor_idx + 4)
 
+                best_cluster2 = None
                 for other_anchor_idx in range(lo, hi):
                     cluster2 = fps2[other_anchor_idx]
                     sim, i_in_cluster, j_in_cluster = compare_audio_clusters(cluster1, cluster2)
@@ -142,17 +146,24 @@ def compare_features(f1: VideoFeatures, f2: VideoFeatures, verbose: bool = False
                         best_cluster_sim = sim
                         best_cluster_idx = other_anchor_idx
                         best_i_in_cluster, best_j_in_cluster = i_in_cluster, j_in_cluster
+                        best_cluster2 = cluster2
 
-                if verbose:
-                    anchor_sample_ts = fps2[best_cluster_idx][best_j_in_cluster][0] if best_cluster_idx < len(fps2) and best_j_in_cluster < len(fps2[best_cluster_idx]) else 0
+                if verbose and best_cluster2:
+                    for i, (ts1, fp1_list) in enumerate(cluster1):
+                        for j, (ts2, fp2_list) in enumerate(best_cluster2):
+                            sim = compare_audio_fingerprints(np.array(fp1_list), np.array(fp2_list))
+                            verbose_lines.append(f"        Sample {i}a: ts={ts1:.1f}s vs Sample {j}a: ts={ts2:.1f}s: similarity={sim:.4f}")
+                    best_ts = fps2[best_cluster_idx][best_j_in_cluster][0] if best_cluster_idx < len(fps2) and best_j_in_cluster < len(fps2[best_cluster_idx]) else 0
                     result_str = "PASS" if best_cluster_sim >= AUDIO_THRESHOLD else "FAIL"
-                    verbose_lines.append(f"      Sample {anchor_idx}: anchor={anchor_ts:.1f}s vs {best_cluster_idx}: best_sim={best_cluster_sim:.4f}, threshold={AUDIO_THRESHOLD}, result={result_str}")
+                    verbose_lines.append(f"        Best for sample {anchor_idx}: sample {best_j_in_cluster}a ts={best_ts:.1f}s similarity={best_cluster_sim:.4f} (threshold={AUDIO_THRESHOLD}, result={result_str})")
 
-                if best_cluster_sim >= AUDIO_THRESHOLD:
+                if best_cluster_sim > AUDIO_THRESHOLD:
                     matches += 1
 
             if verbose:
-                verbose_lines.append(f"    Stage 4 (Audio): {matches}/{num_anchors} anchors matched, need {AUDIO_REQUIRED_MATCHES}")
+                required = max(1, AUDIO_REQUIRED_MATCHES)
+                audio_result = "PASS" if matches >= required else "FAIL"
+                verbose_lines.append(f"      Audio: {matches}/{num_anchors} anchors matched, required={required}, threshold={AUDIO_THRESHOLD} (result={audio_result})")
 
             if matches >= AUDIO_REQUIRED_MATCHES:
                 if verbose:
@@ -160,16 +171,18 @@ def compare_features(f1: VideoFeatures, f2: VideoFeatures, verbose: bool = False
                 return True, "audio_fingerprint", verbose_lines
 
     # STAGE 5: Visual fingerprint
-    clusters1 = extract_visual_samples_batch(f1.get("path", ""), dur1, TEMP_DIR)
-    clusters2 = extract_visual_samples_batch(f2.get("path", ""), dur2, TEMP_DIR)
-    if clusters1 and clusters2:
-        hashes1 = generate_visual_fingerprint(clusters1)
-        hashes2 = generate_visual_fingerprint(clusters2)
-        sim, visual_verbose = compare_visual_fingerprints(hashes1, hashes2)
+    hashes1 = f1.get("visual_hashes", [])
+    hashes2 = f2.get("visual_hashes", [])
+    if hashes1 and hashes2:
+        if verbose:
+            verbose_lines.append(f"    Stage 5 (Visual): {len(hashes1)} anchor clusters")
+        sim, visual_verbose = compare_visual_fingerprints(hashes1, hashes2, verbose=verbose)
         verbose_lines.extend(visual_verbose)
         if verbose:
-            result_str = "PASS" if sim >= VISUAL_FRAME_THRESHOLD else "FAIL"
-            verbose_lines.append(f"    Stage 5 (Visual): similarity={sim:.4f}, threshold={VISUAL_FRAME_THRESHOLD}, result={result_str}")
+            matched_frames = int(sim * len(hashes1))
+            required = max(1, VISUAL_REQUIRED_MATCHES)
+            visual_result = "PASS" if matched_frames >= required else "FAIL"
+            verbose_lines.append(f"      Visual: {matched_frames}/{len(hashes1)} anchors matched, required={required} (result={visual_result})")
         if sim >= VISUAL_FRAME_THRESHOLD:
             return True, "visual_fingerprint", verbose_lines
 
@@ -422,19 +435,26 @@ def run_scan(args):
 
         features_list = []
         with ProcessPoolExecutor(max_workers=n_workers) as executor:
-            futures = {executor.submit(extract_all_features, path): path for path in video_paths}
+            futures = {executor.submit(extract_all_features, path, TEMP_DIR): path for path in video_paths}
             completed = 0
             total = len(futures)
+            errors = []
             for future in as_completed(futures):
                 try:
                     features = future.result()
                     if features.get("duration", 0) > 0:
                         features_list.append(features)
-                except Exception:
-                    pass
+                except Exception as e:
+                    path = futures[future]
+                    errors.append((path, str(e)))
                 completed += 1
                 if completed % 10 == 0 or completed == total:
                     print(f"Extracting features: {completed}/{total}", flush=True)
+            
+            if errors:
+                print(f"\nErrors processing {len(errors)} videos:")
+                for path, err in errors[:5]:
+                    print(f"  {os.path.basename(path)}: {err}")
 
         if len(features_list) < 2:
             print("Not enough valid videos to compare")
