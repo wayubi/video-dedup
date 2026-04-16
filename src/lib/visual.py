@@ -26,10 +26,10 @@ def extract_visual_samples_batch(video_path: str, duration: float, temp_dir: str
     if temp_dir is None or duration <= 0:
         return []
 
-    from lib.config import SHORT_VIDEO_THRESHOLD, SHORT_SKIP_FIRST, SHORT_CLUSTER_SECONDS, VISUAL_CLUSTER_SECONDS, NUM_VISUAL_ANCHORS
+    from lib.config import SHORT_VIDEO_THRESHOLD, SHORT_SKIP_FIRST, SHORT_CLUSTER_SECONDS, VISUAL_CLUSTER_SECONDS, NUM_VISUAL_ANCHORS, SKIP_FIRST_SECONDS
 
     is_short_video = duration < SHORT_VIDEO_THRESHOLD
-    effective_start = SHORT_SKIP_FIRST if is_short_video else 10
+    effective_start = SHORT_SKIP_FIRST if is_short_video else SKIP_FIRST_SECONDS
     cluster_seconds = SHORT_CLUSTER_SECONDS if is_short_video else VISUAL_CLUSTER_SECONDS
     num_anchors = NUM_VISUAL_ANCHORS
 
@@ -179,10 +179,10 @@ def compare_visual_fingerprints(hashes1: List[List[Tuple[float, List[str]]]], ha
                     sim = frame_similarity(h1, h2)
                     verbose_lines.append(f"        Frame {i}a: ts={ts1:.1f}s vs Frame {j}a: ts={ts2:.1f}s: similarity={sim:.4f}")
             best_ts = hashes2[best_cluster_idx][best_j_in_cluster][0] if hashes2[best_cluster_idx] else 0
-            result = "PASS" if best_cluster_sim > VISUAL_FRAME_THRESHOLD else "FAIL"
+            result = "PASS" if best_cluster_sim >= VISUAL_FRAME_THRESHOLD else "FAIL"
             verbose_lines.append(f"        Best for frame {anchor_idx}: frame {best_j_in_cluster}a ts={best_ts:.1f}s similarity={best_cluster_sim:.4f} (threshold={VISUAL_FRAME_THRESHOLD:.4f}, result={result})")
 
-        if best_cluster_sim > VISUAL_FRAME_THRESHOLD:
+        if best_cluster_sim >= VISUAL_FRAME_THRESHOLD:
             best_count += 1
 
     return best_count / max(n1, n2), verbose_lines

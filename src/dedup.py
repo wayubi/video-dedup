@@ -128,9 +128,6 @@ def compare_features(f1: VideoFeatures, f2: VideoFeatures, verbose: bool = False
                 cluster1 = fps1[anchor_idx]
                 anchor_ts = cluster1[0][0] if cluster1 else 0
 
-                if verbose:
-                    verbose_lines.append(f"      Sample {anchor_idx}: anchor={anchor_ts:.1f}s")
-
                 best_cluster_sim = 0.0
                 best_cluster_idx = anchor_idx
                 best_i_in_cluster, best_j_in_cluster = 0, 0
@@ -138,7 +135,6 @@ def compare_features(f1: VideoFeatures, f2: VideoFeatures, verbose: bool = False
                 lo = max(0, anchor_idx - 3)
                 hi = min(len(fps2), anchor_idx + 4)
 
-                best_cluster2 = None
                 for other_anchor_idx in range(lo, hi):
                     cluster2 = fps2[other_anchor_idx]
                     sim, i_in_cluster, j_in_cluster = compare_audio_clusters(cluster1, cluster2)
@@ -146,28 +142,27 @@ def compare_features(f1: VideoFeatures, f2: VideoFeatures, verbose: bool = False
                         best_cluster_sim = sim
                         best_cluster_idx = other_anchor_idx
                         best_i_in_cluster, best_j_in_cluster = i_in_cluster, j_in_cluster
-                        best_cluster2 = cluster2
 
-                if verbose and best_cluster2:
+                if verbose:
+                    verbose_lines.append(f"      Sample {anchor_idx}: anchor={anchor_ts:.1f}s")
                     for i, (ts1, fp1_list) in enumerate(cluster1):
-                        for j, (ts2, fp2_list) in enumerate(best_cluster2):
-                            sim = compare_audio_fingerprints(np.array(fp1_list), np.array(fp2_list))
+                        for j, (ts2, fp2_list) in enumerate(fps2[best_cluster_idx]):
+                            fp1_arr = np.array(fp1_list)
+                            fp2_arr = np.array(fp2_list)
+                            sim = compare_audio_fingerprints(fp1_arr, fp2_arr)
                             verbose_lines.append(f"        Sample {i}a: ts={ts1:.1f}s vs Sample {j}a: ts={ts2:.1f}s: similarity={sim:.4f}")
-                    best_ts = fps2[best_cluster_idx][best_j_in_cluster][0] if best_cluster_idx < len(fps2) and best_j_in_cluster < len(fps2[best_cluster_idx]) else 0
-                    result_str = "PASS" if best_cluster_sim >= AUDIO_THRESHOLD else "FAIL"
-                    verbose_lines.append(f"        Best for sample {anchor_idx}: sample {best_j_in_cluster}a ts={best_ts:.1f}s similarity={best_cluster_sim:.4f} (threshold={AUDIO_THRESHOLD}, result={result_str})")
+                    best_ts = fps2[best_cluster_idx][best_j_in_cluster][0] if fps2[best_cluster_idx] else 0
+                    result = "PASS" if best_cluster_sim > AUDIO_THRESHOLD else "FAIL"
+                    verbose_lines.append(f"        Best for sample {anchor_idx}: sample {best_j_in_cluster}a ts={best_ts:.1f}s similarity={best_cluster_sim:.4f} (threshold={AUDIO_THRESHOLD}, result={result})")
 
                 if best_cluster_sim > AUDIO_THRESHOLD:
                     matches += 1
 
+            required = max(1, AUDIO_REQUIRED_MATCHES)
+            audio_result = "PASS" if matches >= required else "FAIL"
             if verbose:
-                required = max(1, AUDIO_REQUIRED_MATCHES)
-                audio_result = "PASS" if matches >= required else "FAIL"
                 verbose_lines.append(f"      Audio: {matches}/{num_anchors} anchors matched, required={required}, threshold={AUDIO_THRESHOLD} (result={audio_result})")
-
-            if matches >= AUDIO_REQUIRED_MATCHES:
-                if verbose:
-                    verbose_lines.append(f"    Stage 4 (Audio): MATCH")
+            if matches >= required:
                 return True, "audio_fingerprint", verbose_lines
 
     # STAGE 5: Visual fingerprint
@@ -176,14 +171,14 @@ def compare_features(f1: VideoFeatures, f2: VideoFeatures, verbose: bool = False
     if hashes1 and hashes2:
         if verbose:
             verbose_lines.append(f"    Stage 5 (Visual): {len(hashes1)} anchor clusters")
-        sim, visual_verbose = compare_visual_fingerprints(hashes1, hashes2, verbose=verbose)
-        verbose_lines.extend(visual_verbose)
+        visual_sim, visual_verbose_lines = compare_visual_fingerprints(hashes1, hashes2, verbose)
+        verbose_lines.extend(visual_verbose_lines)
+        matched_frames = int(visual_sim * len(hashes1))
+        required = max(1, VISUAL_REQUIRED_MATCHES)
+        visual_result = "PASS" if matched_frames >= required else "FAIL"
         if verbose:
-            matched_frames = int(sim * len(hashes1))
-            required = max(1, VISUAL_REQUIRED_MATCHES)
-            visual_result = "PASS" if matched_frames >= required else "FAIL"
             verbose_lines.append(f"      Visual: {matched_frames}/{len(hashes1)} anchors matched, required={required} (result={visual_result})")
-        if sim >= VISUAL_FRAME_THRESHOLD:
+        if matched_frames >= required:
             return True, "visual_fingerprint", verbose_lines
 
     return False, "no_match", verbose_lines
@@ -191,49 +186,37 @@ def compare_features(f1: VideoFeatures, f2: VideoFeatures, verbose: bool = False
 
 def find_duplicate_groups_with_features(features_list, verbose=False):
     from lib.config import DURATION_BUCKET_SIZE, DURATION_BUCKET_ADJACENT, FORCE_COMPARE_THRESHOLD
+    from collections import defaultdict
 
     n = len(features_list)
     if n < 2:
         return []
 
+    matches = defaultdict(set)
+    print(f"Analyzing {n} videos for duplicates (parallel comparisons)...")
+
+    all_pairs = []
+    added_pairs = set()
+
     short_videos = [f for f in features_list if f.get("duration", 0) < FORCE_COMPARE_THRESHOLD]
     long_videos = [f for f in features_list if f.get("duration", 0) >= FORCE_COMPARE_THRESHOLD]
 
-    groups = []
-    used = set()
-    added_pairs = set()
+    print(f"Short videos (< {FORCE_COMPARE_THRESHOLD}s): {len(short_videos)}")
+    print(f"Long videos (>= {FORCE_COMPARE_THRESHOLD}s): {len(long_videos)}")
 
-    def compare_pair(f1, f2):
-        is_dup, reason, verbose_lines = compare_features(f1, f2, verbose)
-        if verbose and verbose_lines:
-            for line in verbose_lines:
-                print(line)
-        return is_dup
+    for i, f1 in enumerate(short_videos):
+        for f2 in short_videos[i + 1:]:
+            pair = tuple(sorted([f1["path"], f2["path"]]))
+            if pair not in added_pairs:
+                added_pairs.add(pair)
+                all_pairs.append((f1, f2))
 
-    if short_videos:
-        for i, f1 in enumerate(short_videos):
-            if i in [idx for idx, f in enumerate(features_list) if f in short_videos and idx in used]:
-                continue
-            group = [f1["path"]]
-            idx_i = features_list.index(f1)
+        for f2 in long_videos:
+            pair = tuple(sorted([f1["path"], f2["path"]]))
+            if pair not in added_pairs:
+                added_pairs.add(pair)
+                all_pairs.append((f1, f2))
 
-            for j, f2 in enumerate(features_list):
-                if j <= idx_i:
-                    continue
-                pair = tuple(sorted([f1["path"], f2["path"]]))
-                if pair in added_pairs:
-                    continue
-
-                if compare_pair(f1, f2):
-                    group.append(f2["path"])
-                    added_pairs.add(pair)
-                    used.add(j)
-
-            if len(group) > 1:
-                groups.append(group)
-                used.add(idx_i)
-
-    from collections import defaultdict
     duration_groups = defaultdict(list)
     for f in long_videos:
         bucket = round(f.get("duration", 0) / DURATION_BUCKET_SIZE) * DURATION_BUCKET_SIZE
@@ -247,52 +230,81 @@ def find_duplicate_groups_with_features(features_list, verbose=False):
 
         if bsize >= 2:
             for i in range(bsize):
-                idx_i = features_list.index(bucket_features[i])
-                if idx_i in used:
-                    continue
-                group = [bucket_features[i]["path"]]
-                
                 for j in range(i + 1, bsize):
-                    idx_j = features_list.index(bucket_features[j])
                     pair = tuple(sorted([bucket_features[i]["path"], bucket_features[j]["path"]]))
-                    if pair in added_pairs:
-                        continue
-                    
-                    if compare_pair(bucket_features[i], bucket_features[j]):
-                        group.append(bucket_features[j]["path"])
+                    if pair not in added_pairs:
                         added_pairs.add(pair)
-                        used.add(idx_j)
+                        all_pairs.append((bucket_features[i], bucket_features[j]))
 
-                if len(group) > 1:
-                    groups.append(group)
-                    used.add(idx_i)
-
-        adjacent_buckets = [bucket - DURATION_BUCKET_SIZE, bucket + DURATION_BUCKET_SIZE]
-        for adj_bucket in adjacent_buckets:
+        for offset in range(-DURATION_BUCKET_ADJACENT, DURATION_BUCKET_ADJACENT + 1):
+            if offset == 0:
+                continue
+            adj_bucket = bucket + (offset * DURATION_BUCKET_SIZE)
             if adj_bucket in duration_groups:
                 for f1 in bucket_features:
-                    idx_i = features_list.index(f1)
-                    if idx_i in used:
-                        continue
-                    group = [f1["path"]]
-                    had_match = False
-
                     for f2 in duration_groups[adj_bucket]:
-                        idx_j = features_list.index(f2)
                         pair = tuple(sorted([f1["path"], f2["path"]]))
-                        if pair in added_pairs:
-                            continue
-
-                        if compare_pair(f1, f2):
-                            group.append(f2["path"])
+                        if pair not in added_pairs:
                             added_pairs.add(pair)
-                            used.add(idx_j)
-                            had_match = True
+                            all_pairs.append((f1, f2))
 
-                    if had_match and len(group) > 1:
-                        groups.append(group)
-                        used.add(idx_i)
+    if not all_pairs:
+        return []
 
+    n_workers = os.cpu_count() or 4
+    comparison_results = []
+    total_pairs = len(all_pairs)
+
+    print(f"Comparing {total_pairs} video pairs using {n_workers} workers...")
+
+    with ProcessPoolExecutor(max_workers=n_workers) as executor:
+        futures = {executor.submit(compare_features, f1, f2, verbose): (f1, f2) for f1, f2 in all_pairs}
+        completed = 0
+        for future in as_completed(futures):
+            try:
+                f1, f2 = futures[future]
+                is_dup, _, verbose_lines = future.result()
+
+                for line in verbose_lines:
+                    print(line)
+
+                if is_dup:
+                    comparison_results.append((f1["path"], f2["path"]))
+
+                completed += 1
+                if completed % 1000 == 0:
+                    pct = int(100 * completed / total_pairs)
+                    print(f"Progress: {completed}/{total_pairs} ({pct}%)", flush=True)
+
+            except Exception:
+                completed += 1
+
+    if total_pairs % 1000 != 0:
+        print(f"Progress: {total_pairs}/{total_pairs} (100%)", flush=True)
+
+    for p1, p2 in comparison_results:
+        matches[p1].add(p2)
+        matches[p2].add(p1)
+
+    visited = set()
+    groups = []
+    for f in features_list:
+        vp = f["path"]
+        if vp in visited:
+            continue
+        group = []
+        queue = [vp]
+        while queue:
+            current = queue.pop(0)
+            if current in visited:
+                continue
+            visited.add(current)
+            group.append(current)
+            for neighbor in matches.get(current, []):
+                if neighbor not in visited:
+                    queue.append(neighbor)
+        if len(group) > 1:
+            groups.append(group)
     return groups
 
 
@@ -309,7 +321,11 @@ def organize_duplicates(directory, duplicate_groups, dry_run=False, create_marke
         folder_path = os.path.join(deduped_base, folder_name)
         print(f"\n{folder_name}: {len(group)} videos")
 
-        videos_with_metadata = [(v, extract_video_metadata(v)) for v in group]
+        videos_with_metadata = []
+        for video_path in group:
+            print(f"  Extracting metadata: {os.path.basename(video_path)}")
+            videos_with_metadata.append((video_path, extract_video_metadata(video_path)))
+
         analysis_results = analyze_duplicate_set(videos_with_metadata)
 
         for video_path in group:
@@ -334,14 +350,17 @@ def organize_duplicates(directory, duplicate_groups, dry_run=False, create_marke
                     metadata = analysis.get("metadata", {})
                     json_data = {
                         "recommendation": analysis.get("recommendation", "UNKNOWN"),
-                        "original_full_path": metadata.get("original_full_path", os.path.abspath(video_path)),
+                        "original_full_path": (metadata.get("file_info", {})
+                                               .get("original_full_path", os.path.abspath(video_path))),
                         "quality_score": analysis.get("quality_score", 0),
                         "reason": analysis.get("reason", ""),
                         "filename": filename,
-                        "file_size_bytes": metadata.get("file_size_bytes", 0),
-                        "modification_time": metadata.get("modification_time", 0),
+                        "file_size_bytes": metadata.get("file_info", {}).get("file_size_bytes", 0),
+                        "modification_time": metadata.get("file_info", {}).get("modification_time", 0),
                         **metadata,
                     }
+                    if analysis.get("recommendation") == "DELETE":
+                        json_data["better_alternative"] = analysis.get("better_alternative")
 
                     json_filename = f"{os.path.basename(dest_path)}.json"
                     with open(os.path.join(folder_path, json_filename), 'w') as f:
@@ -355,6 +374,7 @@ def organize_duplicates(directory, duplicate_groups, dry_run=False, create_marke
 
                     shutil.move(video_path, dest_path)
                     print(f"  -> Moved to __deduped/{folder_name}")
+                    print(f"  -> Created metadata: {json_filename}")
                 except Exception as e:
                     print(f"  ERROR moving {video_path}: {e}")
 
@@ -373,6 +393,17 @@ def run_scan(args):
         elif args.include_folders:
             scan_mode = "TARGETED"
             include_folders = args.include_folders
+
+        if args.wipe_cache:
+            from lib.config import CACHE_DIR, CACHE_LOCK, CACHE_INDEX
+            try:
+                if os.path.exists(CACHE_LOCK):
+                    os.remove(CACHE_LOCK)
+                if os.path.exists(CACHE_INDEX):
+                    os.remove(CACHE_INDEX)
+                print(f"Deleted cache contents: {CACHE_DIR}")
+            except Exception as e:
+                print(f"Warning: Could not fully delete cache: {e}")
 
         if scan_mode == "ROOT":
             print(f"Scanning {base_dir} (root directory only)...")
@@ -415,23 +446,12 @@ def run_scan(args):
                     w, h = result["details"].get("resolution", (0, 0))
                     print(f"  - {os.path.basename(path)} ({w}x{h}) [conf: {result['confidence']:.2f}]")
 
-        if args.wipe_cache:
-            from lib.config import CACHE_DIR, CACHE_LOCK, CACHE_INDEX
-            try:
-                if os.path.exists(CACHE_LOCK):
-                    os.remove(CACHE_LOCK)
-                if os.path.exists(CACHE_INDEX):
-                    os.remove(CACHE_INDEX)
-                print(f"Deleted cache contents: {CACHE_DIR}")
-            except Exception as e:
-                print(f"Warning: Could not fully delete cache: {e}")
-
         if args.prune_cache:
             pruned = prune_cache(base_dir)
             print(f"{'Pruned ' if pruned else ''}{pruned} stale cache entries")
 
         n_workers = os.cpu_count() or 4
-        print(f"Using {n_workers} workers")
+        print(f"Using {n_workers} workers for feature extraction")
 
         features_list = []
         with ProcessPoolExecutor(max_workers=n_workers) as executor:
@@ -449,7 +469,8 @@ def run_scan(args):
                     errors.append((path, str(e)))
                 completed += 1
                 if completed % 10 == 0 or completed == total:
-                    print(f"Extracting features: {completed}/{total}", flush=True)
+                    pct = int(100 * completed / total)
+                    print(f"Extracting features: {completed}/{total} ({pct}%)", flush=True)
             
             if errors:
                 print(f"\nErrors processing {len(errors)} videos:")

@@ -159,5 +159,5 @@ def compare_audio_fingerprints(fp1: np.ndarray, fp2: np.ndarray) -> float:
     hi = min(len(correlation), center + max_shift + 1)
     best_raw = float(np.max(correlation[lo:hi]))
 
-    best_normalized = best_raw / min_len
-    return min(1.0, best_normalized)
+    similarity = best_raw / (min_len + 1e-10)
+    return float(np.clip((similarity + 1) / 2, 0.0, 1.0))
