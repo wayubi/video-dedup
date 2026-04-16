@@ -30,6 +30,17 @@ TEMP_DIR = None
 
 
 def compare_features(f1: VideoFeatures, f2: VideoFeatures, verbose: bool = False):
+    """Compare two videos using precomputed features with multi-stage filtering."""
+    from lib.config import (
+        LENGTH_TOLERANCE, AUDIO_THRESHOLD, AUDIO_REQUIRED_MATCHES, VISUAL_FRAME_THRESHOLD,
+        VISUAL_REQUIRED_MATCHES, NUM_VISUAL_ANCHORS, NUM_AUDIO_ANCHORS, FORCE_COMPARE_THRESHOLD
+    )
+
+    if AUDIO_REQUIRED_MATCHES > NUM_AUDIO_ANCHORS:
+        print(f"Error: AUDIO_REQUIRED_MATCHES ({AUDIO_REQUIRED_MATCHES}) > NUM_AUDIO_ANCHORS ({NUM_AUDIO_ANCHORS})")
+    if VISUAL_REQUIRED_MATCHES > NUM_VISUAL_ANCHORS:
+        print(f"Error: VISUAL_REQUIRED_MATCHES ({VISUAL_REQUIRED_MATCHES}) > NUM_VISUAL_ANCHORS ({NUM_VISUAL_ANCHORS})")
+
     v1_name = os.path.basename(f1.get("path", ""))
     v2_name = os.path.basename(f2.get("path", ""))
     dur1, dur2 = f1.get("duration", 0), f2.get("duration", 0)
@@ -41,38 +52,101 @@ def compare_features(f1: VideoFeatures, f2: VideoFeatures, verbose: bool = False
     if dur1 <= 0 or dur2 <= 0:
         return False, "no_duration", verbose_lines
 
-    hash1, hash2 = f1.get("file_hash", ""), f2.get("file_hash", "")
+    # STAGE 0: File hash (instant - identical files)
+    hash1 = f1.get("file_hash", "")
+    hash2 = f2.get("file_hash", "")
     if hash1 and hash2 and hash1 == hash2:
+        if verbose:
+            verbose_lines.append(f"    Stage 0 (File Hash): MATCH")
         return True, "file_hash", verbose_lines
 
+    # STAGE 1: Duration (fastest)
+    v1_short = dur1 < FORCE_COMPARE_THRESHOLD
+    v2_short = dur2 < FORCE_COMPARE_THRESHOLD
+    skip_duration_check = v1_short and v2_short
+
     duration_diff = abs(dur1 - dur2) / max(dur1, dur2, 1)
-    if duration_diff > LENGTH_TOLERANCE:
+    if verbose:
+        if skip_duration_check:
+            verbose_lines.append(f"    Stage 1 (Duration): skipped (both videos < {FORCE_COMPARE_THRESHOLD}s)")
+        else:
+            verbose_lines.append(f"    Stage 1 (Duration): diff={duration_diff:.4f}, threshold={LENGTH_TOLERANCE}, result={'PASS' if duration_diff <= LENGTH_TOLERANCE else 'FAIL'}")
+    if not skip_duration_check and duration_diff > LENGTH_TOLERANCE:
         return False, "duration_mismatch", verbose_lines
 
+    # STAGE 2: Aspect ratio check
+    res1 = f1.get("resolution", (0, 0))
+    res2 = f2.get("resolution", (0, 0))
+    if res1 != (0, 0) and res2 != (0, 0):
+        ratio1 = res1[0] / res1[1] if res1[1] > 0 else 0
+        ratio2 = res2[0] / res2[1] if res2[1] > 0 else 0
+        ratio_diff = abs(ratio1 - ratio2)
+        if verbose:
+            verbose_lines.append(f"    Stage 2 (Aspect Ratio): ratio1={ratio1:.3f}, ratio2={ratio2:.3f}, diff={ratio_diff:.4f}, threshold=0.05, result={'PASS' if ratio_diff <= 0.05 else 'FAIL'}")
+        if ratio_diff > 0.05:
+            return False, "aspect_ratio_mismatch", verbose_lines
+
+    # STAGE 3: File size
+    size1 = f1.get("file_size", 0)
+    size2 = f2.get("file_size", 0)
+    if size1 > 0 and size2 > 0:
+        size_diff = abs(size1 - size2) / max(size1, size2)
+        if verbose:
+            if skip_duration_check:
+                verbose_lines.append(f"    Stage 3 (File Size): skipped (both videos < {FORCE_COMPARE_THRESHOLD}s)")
+            else:
+                verbose_lines.append(f"    Stage 3 (File Size): size1={size1}, size2={size2}, diff={size_diff:.4f}, threshold=0.90, result={'PASS' if size_diff <= 0.90 else 'FAIL'}")
+        if not skip_duration_check and size_diff > 0.90:
+            return False, "size_mismatch", verbose_lines
+
+    # STAGE 4: Audio fingerprint
     if f1.get("has_audio") and f2.get("has_audio"):
-        fps1, fps2 = f1.get("audio_fingerprints", []), f2.get("audio_fingerprints", [])
+        fps1 = f1.get("audio_fingerprints", [])
+        fps2 = f2.get("audio_fingerprints", [])
+
         if fps1 and fps2:
+            if verbose:
+                verbose_lines.append(f"    Stage 4 (Audio): {len(fps1)} anchor clusters")
+
             matches = 0
-            for i in range(min(len(fps1), len(fps2))):
+            num_anchors = min(len(fps1), len(fps2))
+
+            for anchor_idx in range(num_anchors):
+                cluster1 = fps1[anchor_idx]
+                cluster2 = fps2[anchor_idx]
                 best_sim = 0.0
-                for j in range(len(fps2[i])):
-                    ts2, fp2_list = fps2[i][j]
-                    for k in range(len(fps1[i])):
-                        ts1, fp1_list = fps1[i][k]
+                for ts1, fp1_list in cluster1:
+                    for ts2, fp2_list in cluster2:
                         sim = compare_audio_fingerprints(np.array(fp1_list), np.array(fp2_list))
                         if sim > best_sim:
                             best_sim = sim
+
+                if verbose:
+                    result_str = "PASS" if best_sim >= AUDIO_THRESHOLD else "FAIL"
+                    verbose_lines.append(f"      Anchor {anchor_idx}: best_sim={best_sim:.4f}, threshold={AUDIO_THRESHOLD}, result={result_str}")
+
                 if best_sim >= AUDIO_THRESHOLD:
                     matches += 1
+
+            if verbose:
+                verbose_lines.append(f"    Stage 4 (Audio): {matches}/{num_anchors} anchors matched, need {AUDIO_REQUIRED_MATCHES}")
+
             if matches >= AUDIO_REQUIRED_MATCHES:
+                if verbose:
+                    verbose_lines.append(f"    Stage 4 (Audio): MATCH")
                 return True, "audio_fingerprint", verbose_lines
 
+    # STAGE 5: Visual fingerprint
     clusters1 = extract_visual_samples_batch(f1.get("path", ""), dur1, TEMP_DIR)
     clusters2 = extract_visual_samples_batch(f2.get("path", ""), dur2, TEMP_DIR)
     if clusters1 and clusters2:
         hashes1 = generate_visual_fingerprint(clusters1)
         hashes2 = generate_visual_fingerprint(clusters2)
-        sim, _ = compare_visual_fingerprints(hashes1, hashes2)
+        sim, visual_verbose = compare_visual_fingerprints(hashes1, hashes2)
+        verbose_lines.extend(visual_verbose)
+        if verbose:
+            result_str = "PASS" if sim >= VISUAL_FRAME_THRESHOLD else "FAIL"
+            verbose_lines.append(f"    Stage 5 (Visual): similarity={sim:.4f}, threshold={VISUAL_FRAME_THRESHOLD}, result={result_str}")
         if sim >= VISUAL_FRAME_THRESHOLD:
             return True, "visual_fingerprint", verbose_lines
 
@@ -94,7 +168,10 @@ def find_duplicate_groups_with_features(features_list, verbose=False):
         for j in range(i + 1, n):
             if j in used:
                 continue
-            is_dup, _, _ = compare_features(features_list[i], features_list[j], verbose)
+            is_dup, reason, verbose_lines = compare_features(features_list[i], features_list[j], verbose)
+            if verbose and verbose_lines:
+                for line in verbose_lines:
+                    print(line)
             if is_dup:
                 group.append(features_list[j]["path"])
                 used.add(j)
