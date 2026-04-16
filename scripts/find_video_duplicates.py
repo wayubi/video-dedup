@@ -596,9 +596,9 @@ def compare_visual_fingerprints(hashes1: List[List[Tuple[float, List[str]]]], ha
 def find_videos(
     directory: str,
     include_subfolders: Optional[List[str]] = None,
-    exclude_root: bool = False
+    scan_mode: str = "RECURSIVE"
 ) -> List[str]:
-    """Find all video files in directory."""
+    """Find all video files in directory based on scan_mode."""
     videos = []
     abs_directory = os.path.abspath(directory)
     deduped_folder = os.path.join(abs_directory, "__deduped")
@@ -610,47 +610,50 @@ def find_videos(
         except ValueError:
             return False
 
-    if include_subfolders is None:
-        if not exclude_root:
-            for file in os.listdir(abs_directory):
-                file_path = os.path.join(abs_directory, file)
-                if os.path.isfile(file_path) and Path(file).suffix.lower() in VIDEO_EXTENSIONS:
-                    videos.append(file_path)
-    else:
-        if len(include_subfolders) == 0:
-            for root, _, files in os.walk(abs_directory):
-                if is_in_deduped(root):
-                    continue
-                if exclude_root and root == abs_directory:
+    if scan_mode == "ROOT":
+        for file in os.listdir(abs_directory):
+            file_path = os.path.join(abs_directory, file)
+            if os.path.isfile(file_path) and Path(file).suffix.lower() in VIDEO_EXTENSIONS:
+                videos.append(file_path)
+    
+    elif scan_mode == "TARGETED":
+        if not include_subfolders:
+            print("Error: Scan mode 'TARGETED' requires explicit --include-folders paths.")
+            return []
+        
+        folders_to_scan = []
+        for subfolder in include_subfolders:
+            subfolder_path = (os.path.abspath(subfolder) if os.path.isabs(subfolder)
+                              else os.path.abspath(os.path.join(abs_directory, subfolder)))
+            
+            if not os.path.exists(subfolder_path):
+                print(f"Warning: Specified subfolder does not exist: {subfolder}")
+                continue
+            if not os.path.isdir(subfolder_path):
+                print(f"Warning: Specified path is not a directory: {subfolder}")
+                continue
+            if subfolder_path.startswith(deduped_folder):
+                print(f"Warning: Skipping __deduped folder: {subfolder_path}")
+                continue
+            folders_to_scan.append(subfolder_path)
+        
+        for folder in folders_to_scan:
+            for root, _, files in os.walk(folder):
+                if root.startswith(deduped_folder):
                     continue
                 for file in files:
                     file_path = os.path.join(root, file)
                     if Path(file).suffix.lower() in VIDEO_EXTENSIONS:
                         videos.append(file_path)
-        else:
-            folders_to_scan = [] if exclude_root else [abs_directory]
-            for subfolder in include_subfolders:
-                subfolder_path = (os.path.abspath(subfolder) if os.path.isabs(subfolder)
-                                  else os.path.abspath(os.path.join(abs_directory, subfolder)))
-                if not os.path.exists(subfolder_path):
-                    print(f"Warning: Specified subfolder does not exist: {subfolder}")
-                    continue
-                if not os.path.isdir(subfolder_path):
-                    print(f"Warning: Specified path is not a directory: {subfolder}")
-                    continue
-                if is_in_deduped(subfolder_path):
-                    print(f"Warning: Skipping __deduped folder: {subfolder}")
-                    continue
-                folders_to_scan.append(subfolder_path)
-
-            for folder in folders_to_scan:
-                for root, _, files in os.walk(folder):
-                    if is_in_deduped(root):
-                        continue
-                    for file in files:
-                        file_path = os.path.join(root, file)
-                        if Path(file).suffix.lower() in VIDEO_EXTENSIONS:
-                            videos.append(file_path)
+    
+    else:  # RECURSIVE
+        for root, _, files in os.walk(abs_directory):
+            if root.startswith(deduped_folder):
+                continue
+            for file in files:
+                file_path = os.path.join(root, file)
+                if Path(file).suffix.lower() in VIDEO_EXTENSIONS:
+                    videos.append(file_path)
 
     return videos
 
@@ -1706,6 +1709,13 @@ def main() -> None:
                         help='Detect videos upscaled from lower resolution')
     parser.add_argument('--create-markers', action='store_true',
                         help='Create .keep/.delete marker files in __deduped folders')
+    
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument('--no-subfolders', action='store_true',
+                      help='Scan only the root directory, ignoring all subfolders')
+    group.add_argument('--include-folders', nargs='+',
+                      help='List of specific subdirectories to scan')
+    
     parser.add_argument('--include-subfolders', nargs='*', metavar='PATH',
                         help='Include subfolders. No args = all; with args = only those paths.')
     parser.add_argument('--exclude-root', action='store_true',
@@ -1747,24 +1757,31 @@ def main() -> None:
     upscaling_results: Dict[str, Any] = {}
 
     try:
-        include_subfolders = args.include_subfolders
-        exclude_root = args.exclude_root
+        scan_mode = "RECURSIVE"
+        include_folders = None
 
-        if include_subfolders is not None:
-            if len(include_subfolders) == 0:
+        if args.no_subfolders:
+            scan_mode = "ROOT"
+        elif args.include_folders:
+            scan_mode = "TARGETED"
+            include_folders = args.include_folders
+        elif args.include_subfolders is not None:
+            include_folders = args.include_subfolders
+
+        if scan_mode == "ROOT":
+            print(f"Scanning {directory} (root directory only)...")
+        elif scan_mode == "TARGETED":
+            print(f"Scanning {directory} with specific subfolders:")
+            for path in include_folders:
+                print(f"  - {path}")
+        else:
+            if args.include_subfolders is not None and len(args.include_subfolders) == 0:
                 print(f"Scanning {directory} and all subfolders...")
             else:
-                print(f"Scanning {directory} with specific subfolders:")
-                for path in include_subfolders:
-                    print(f"  - {path}")
-        else:
-            print(f"Scanning {directory} (root directory only)...")
+                print(f"Scanning {directory} (root directory only)...")
 
-        if exclude_root:
-            print("  (excluding root directory)")
-
-        video_paths = find_videos(directory, include_subfolders=include_subfolders,
-                                  exclude_root=exclude_root)
+        video_paths = find_videos(directory, include_subfolders=include_folders,
+                                  scan_mode=scan_mode)
         if not video_paths:
             print("No videos found!")
             sys.exit(0)
