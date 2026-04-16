@@ -20,6 +20,8 @@ python3 scripts/find_video_duplicates.py <directory> --detect-upscaling
 python3 scripts/find_video_duplicates.py <directory> --include-subfolders
 python3 scripts/find_video_duplicates.py <directory> --include-subfolders path/a path/b
 python3 scripts/find_video_duplicates.py <directory> --include-subfolders --exclude-root
+python3 scripts/find_video_duplicates.py <directory> --no-subfolders
+python3 scripts/find_video_duplicates.py <directory> --include-folders path/a path/b
 python3 scripts/find_video_duplicates.py <directory> --report my_report.json
 ```
 
