@@ -1,0 +1,34 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "instructions": ["AGENTS.md"],
+  "permission": {
+    "bash": {
+      "python3 scripts/find_video_duplicates.py *": "allow",
+      "python3 scripts/dedup_delete.py *": "allow",
+      "python3 scripts/dedup_restore.py *": "allow",
+      "ffprobe *": "allow",
+      "ffmpeg *": "ask",
+      "ls *": "allow",
+      "cat *": "allow",
+      "find *": "allow",
+      "grep *": "allow",
+      "du *": "allow",
+      "file *": "allow",
+      "git log": "allow",
+      "git diff": "allow",
+      "git status": "allow",
+      "git diff *": "allow",
+      "*": "ask"
+    },
+    "edit": "ask",
+    "webfetch": "ask"
+  },
+  "watcher": {
+    "ignore": [
+      "__pycache__/**",
+      ".git/**",
+      "*.pyc",
+      ".deduped/**"
+    ]
+  }
+}
