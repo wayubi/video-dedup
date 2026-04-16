@@ -532,7 +532,7 @@ def run_delete(args):
 
     for set_path, video_path, json_path, marker_path in all_candidates:
         if args.confirm:
-            success, _ = delete_file_pair(video_path, json_path)
+            success, _ = delete_file_pair(video_path, json_path, marker_path)
             if success:
                 print(f"  Deleted: {os.path.basename(video_path)}")
         else:

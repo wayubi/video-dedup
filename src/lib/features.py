@@ -219,8 +219,7 @@ def extract_all_features(video_path: str, temp_dir: Optional[str] = None) -> Vid
     try:
         cached = load_cached_features(video_path)
         if cached and cached.get("duration", 0) > 0:
-            if cached.get("audio_fingerprints") and cached.get("visual_hashes"):
-                return cached
+            return cached
 
         effective_temp_dir = temp_dir if temp_dir is not None else TEMP_DIR
         if effective_temp_dir is None:
@@ -389,7 +388,7 @@ def calculate_multiscale_score(video_path: str, width: int, height: int, temp_di
 
 
 def detect_upscaling(video_path: str, temp_dir: Optional[str] = None):
-    from lib.config import MIN_UPSCALING_ANALYSIS_RESOLUTION
+    from lib.config import MIN_UPSCALING_ANALYSIS_RESOLUTION, UPSCALING_CONFIDENCE_THRESHOLD
     width, height = get_video_resolution(video_path)
     if max(width, height) < MIN_UPSCALING_ANALYSIS_RESOLUTION:
         return False, 0.0, {"skipped": True, "resolution": (width, height)}
@@ -399,7 +398,7 @@ def detect_upscaling(video_path: str, temp_dir: Optional[str] = None):
         duration = get_video_duration(video_path)
         if duration <= 0:
             return False, 0.0, {"skipped": True}
-        timestamp = duration * 0.1
+        timestamp = max(SKIP_FIRST_SECONDS, duration * 0.3)
         temp_frame = os.path.join(temp_dir, f"upscaling_{os.path.basename(video_path)}.jpg")
         subprocess.run(['ffmpeg', '-y', '-ss', str(timestamp), '-i', video_path,
                         '-vframes', '1', '-q:v', '2', temp_frame],
@@ -414,10 +413,10 @@ def detect_upscaling(video_path: str, temp_dir: Optional[str] = None):
             freq_score = calculate_frequency_score(arr)
             edge_score = calculate_edge_sharpness_score(arr)
             multi_score = calculate_multiscale_score(video_path, width, height, temp_dir)
-            scores = {"frequency": freq_score, "edge": edge_score, "multiscale": multi_score}
-            avg_score = (freq_score + edge_score + multi_score) / 3
-            is_upscaled = avg_score >= 0.65
-            return is_upscaled, avg_score, {"resolution": (width, height), "scores": scores}
+            combined = 0.35 * freq_score + 0.25 * edge_score + 0.40 * multi_score
+            is_upscaled = combined > UPSCALING_CONFIDENCE_THRESHOLD
+            scores = {"frequency": round(freq_score, 3), "edge_sharpness": round(edge_score, 3), "multiscale": round(multi_score, 3), "combined": round(combined, 3)}
+            return bool(is_upscaled), float(combined), {"resolution": (width, height), "scores": scores}
         except Exception as e:
             if os.path.exists(temp_frame):
                 os.remove(temp_frame)
