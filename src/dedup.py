@@ -177,31 +177,108 @@ def compare_features(f1: VideoFeatures, f2: VideoFeatures, verbose: bool = False
 
 
 def find_duplicate_groups_with_features(features_list, verbose=False):
+    from lib.config import DURATION_BUCKET_SIZE, DURATION_BUCKET_ADJACENT, FORCE_COMPARE_THRESHOLD
+
     n = len(features_list)
     if n < 2:
         return []
 
+    short_videos = [f for f in features_list if f.get("duration", 0) < FORCE_COMPARE_THRESHOLD]
+    long_videos = [f for f in features_list if f.get("duration", 0) >= FORCE_COMPARE_THRESHOLD]
+
     groups = []
     used = set()
+    added_pairs = set()
 
-    for i in range(n):
-        if i in used:
-            continue
-        group = [features_list[i]["path"]]
-        for j in range(i + 1, n):
-            if j in used:
+    def compare_pair(f1, f2):
+        is_dup, reason, verbose_lines = compare_features(f1, f2, verbose)
+        if verbose and verbose_lines:
+            for line in verbose_lines:
+                print(line)
+        return is_dup
+
+    if short_videos:
+        for i, f1 in enumerate(short_videos):
+            if i in [idx for idx, f in enumerate(features_list) if f in short_videos and idx in used]:
                 continue
-            is_dup, reason, verbose_lines = compare_features(features_list[i], features_list[j], verbose)
-            if verbose and verbose_lines:
-                for line in verbose_lines:
-                    print(line)
-            if is_dup:
-                group.append(features_list[j]["path"])
-                used.add(j)
+            group = [f1["path"]]
+            idx_i = features_list.index(f1)
 
-        if len(group) > 1:
-            groups.append(group)
-            used.add(i)
+            for j, f2 in enumerate(features_list):
+                if j <= idx_i:
+                    continue
+                pair = tuple(sorted([f1["path"], f2["path"]]))
+                if pair in added_pairs:
+                    continue
+
+                if compare_pair(f1, f2):
+                    group.append(f2["path"])
+                    added_pairs.add(pair)
+                    used.add(j)
+
+            if len(group) > 1:
+                groups.append(group)
+                used.add(idx_i)
+
+    from collections import defaultdict
+    duration_groups = defaultdict(list)
+    for f in long_videos:
+        bucket = round(f.get("duration", 0) / DURATION_BUCKET_SIZE) * DURATION_BUCKET_SIZE
+        duration_groups[bucket].append(f)
+
+    all_buckets = sorted(duration_groups.keys())
+
+    for bucket in all_buckets:
+        bucket_features = duration_groups[bucket]
+        bsize = len(bucket_features)
+
+        if bsize >= 2:
+            for i in range(bsize):
+                idx_i = features_list.index(bucket_features[i])
+                if idx_i in used:
+                    continue
+                group = [bucket_features[i]["path"]]
+                
+                for j in range(i + 1, bsize):
+                    idx_j = features_list.index(bucket_features[j])
+                    pair = tuple(sorted([bucket_features[i]["path"], bucket_features[j]["path"]]))
+                    if pair in added_pairs:
+                        continue
+                    
+                    if compare_pair(bucket_features[i], bucket_features[j]):
+                        group.append(bucket_features[j]["path"])
+                        added_pairs.add(pair)
+                        used.add(idx_j)
+
+                if len(group) > 1:
+                    groups.append(group)
+                    used.add(idx_i)
+
+        adjacent_buckets = [bucket - DURATION_BUCKET_SIZE, bucket + DURATION_BUCKET_SIZE]
+        for adj_bucket in adjacent_buckets:
+            if adj_bucket in duration_groups:
+                for f1 in bucket_features:
+                    idx_i = features_list.index(f1)
+                    if idx_i in used:
+                        continue
+                    group = [f1["path"]]
+                    had_match = False
+
+                    for f2 in duration_groups[adj_bucket]:
+                        idx_j = features_list.index(f2)
+                        pair = tuple(sorted([f1["path"], f2["path"]]))
+                        if pair in added_pairs:
+                            continue
+
+                        if compare_pair(f1, f2):
+                            group.append(f2["path"])
+                            added_pairs.add(pair)
+                            used.add(idx_j)
+                            had_match = True
+
+                    if had_match and len(group) > 1:
+                        groups.append(group)
+                        used.add(idx_i)
 
     return groups
 
