@@ -61,7 +61,7 @@ def extract_visual_samples_batch(video_path: str, duration: float, temp_dir: str
                 continue
 
             try:
-                temp_frame = os.path.join(temp_dir, f"frame_{base_name}_{anchor_idx}_{offset_idx}.jpg")
+                temp_frame = os.path.join(temp_dir, f"frame_{os.getpid()}_{base_name}_{anchor_idx}_{offset_idx}.jpg")
                 cmd = [
                     'ffmpeg', '-y', '-ss', str(timestamp), '-i', video_path,
                     '-vframes', '1', '-q:v', '2', temp_frame

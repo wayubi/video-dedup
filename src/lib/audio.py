@@ -67,7 +67,7 @@ def extract_audio_sample(video_path: str, start_time: float, duration: float = A
     if use_temp_dir is None:
         return None
     try:
-        temp_wav = os.path.join(use_temp_dir, f"audio_{os.path.basename(video_path)}_{start_time}.wav")
+        temp_wav = os.path.join(use_temp_dir, f"audio_{os.getpid()}_{os.path.basename(video_path)}_{start_time}.wav")
         cmd = [
             'ffmpeg', '-y', '-ss', str(start_time), '-t', str(duration),
             '-i', video_path, '-vn', '-acodec', 'pcm_s16le', '-ar', '16000', '-ac', '1',
