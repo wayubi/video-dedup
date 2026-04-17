@@ -30,6 +30,8 @@ SHORT_CLUSTER_SECONDS = 5
 
 TEMP_DIR = None
 
+DURATION_PREFERENCE_THRESHOLD = 0.5   # videos shorter than 50% of the longest are deprioritised as KEEP candidates
+
 UPSCALING_CONFIDENCE_THRESHOLD = 0.65
 MIN_UPSCALING_ANALYSIS_RESOLUTION = 720
 

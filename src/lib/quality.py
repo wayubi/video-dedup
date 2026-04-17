@@ -169,6 +169,8 @@ def calculate_quality_score(metadata: Dict) -> Tuple[int, str]:
 
 
 def analyze_duplicate_set(videos_with_metadata: List[Tuple[str, Dict]]) -> Dict[str, Dict]:
+    from lib.config import DURATION_PREFERENCE_THRESHOLD
+
     if not videos_with_metadata:
         return {}
 
@@ -186,9 +188,17 @@ def analyze_duplicate_set(videos_with_metadata: List[Tuple[str, Dict]]) -> Dict[
         results[vp]["reason"] = "Only copy of this content"
         return results
 
+    max_duration = max(
+        r["metadata"].get("video", {}).get("duration_seconds", 0)
+        for r in results.values()
+    )
+
     best_path = max(
         results.keys(),
         key=lambda p: (
+            # Duration tier: videos under DURATION_PREFERENCE_THRESHOLD of the longest
+            # are ranked below all others, preventing a short trailer from winning.
+            results[p]["metadata"].get("video", {}).get("duration_seconds", 0) >= max_duration * DURATION_PREFERENCE_THRESHOLD,
             results[p]["quality_score"],
             results[p]["metadata"].get("video", {}).get("width", 0),
             results[p]["metadata"].get("video", {}).get("frame_rate", 0),
@@ -203,11 +213,21 @@ def analyze_duplicate_set(videos_with_metadata: List[Tuple[str, Dict]]) -> Dict[
     best_bitrate = bvi.get("video_bitrate_kbps", 0)
     best_width = bvi.get("width", 0)
     best_height = bvi.get("height", 0)
+    best_duration = bvi.get("duration_seconds", 0)
 
-    results[best_path]["recommendation"] = "KEEP"
-    results[best_path]["reason"] = (
-        f"Best quality: {best_res}, {best_codec}, {best_fps}fps, score {best_score}"
+    any_short = any(
+        results[p]["metadata"].get("video", {}).get("duration_seconds", 0) < max_duration * DURATION_PREFERENCE_THRESHOLD
+        for p in results if p != best_path
     )
+    if any_short:
+        results[best_path]["reason"] = (
+            f"Longest version ({best_duration:.0f}s): {best_res}, {best_codec}, {best_fps}fps, score {best_score}"
+        )
+    else:
+        results[best_path]["reason"] = (
+            f"Best quality: {best_res}, {best_codec}, {best_fps}fps, score {best_score}"
+        )
+    results[best_path]["recommendation"] = "KEEP"
 
     for video_path, result in results.items():
         if video_path == best_path:
@@ -219,18 +239,24 @@ def analyze_duplicate_set(videos_with_metadata: List[Tuple[str, Dict]]) -> Dict[
         v_brate = vi.get("video_bitrate_kbps", 0)
         v_width = vi.get("width", 0)
         v_height = vi.get("height", 0)
+        v_duration = vi.get("duration_seconds", 0)
 
-        reason = (f"Significantly lower quality (score {score} vs {best_score})"
-                  if best_score - score >= 30 else
-                  f"Lower quality (score {score} vs {best_score})")
-        if v_width * v_height < best_width * best_height:
-            reason += f"; lower resolution ({v_width}x{v_height} vs {best_width}x{best_height})"
-        if v_fps < best_fps:
-            reason += f"; lower frame rate ({v_fps}fps vs {best_fps}fps)"
-        if v_codec != best_codec and best_codec in ('av1', 'hevc', 'h265'):
-            reason += f"; less efficient codec ({v_codec} vs {best_codec})"
-        if v_brate < best_bitrate * 0.7 and v_brate > 0:
-            reason += f"; lower bitrate ({v_brate} vs {best_bitrate} kbps)"
+        is_short = max_duration > 0 and v_duration < max_duration * DURATION_PREFERENCE_THRESHOLD
+        if is_short:
+            reason = (f"Significantly shorter ({v_duration:.0f}s vs {best_duration:.0f}s); "
+                      f"likely a trailer or clip")
+        else:
+            reason = (f"Significantly lower quality (score {score} vs {best_score})"
+                      if best_score - score >= 30 else
+                      f"Lower quality (score {score} vs {best_score})")
+            if v_width * v_height < best_width * best_height:
+                reason += f"; lower resolution ({v_width}x{v_height} vs {best_width}x{best_height})"
+            if v_fps < best_fps:
+                reason += f"; lower frame rate ({v_fps}fps vs {best_fps}fps)"
+            if v_codec != best_codec and best_codec in ('av1', 'hevc', 'h265'):
+                reason += f"; less efficient codec ({v_codec} vs {best_codec})"
+            if v_brate < best_bitrate * 0.7 and v_brate > 0:
+                reason += f"; lower bitrate ({v_brate} vs {best_bitrate} kbps)"
 
         result["recommendation"] = "DELETE"
         result["reason"] = reason
