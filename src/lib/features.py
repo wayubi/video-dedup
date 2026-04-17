@@ -31,12 +31,19 @@ def find_videos(directory: str, include_subfolders: Optional[List[str]] = None, 
     abs_directory = os.path.abspath(directory)
     deduped_folder = os.path.join(abs_directory, "__deduped")
 
+    def is_in_deduped(path: str) -> bool:
+        try:
+            return (os.path.commonpath([path, deduped_folder]) == deduped_folder or
+                    path.startswith(deduped_folder + os.sep))
+        except ValueError:
+            return False
+
     if scan_mode == "ROOT":
         for file in os.listdir(abs_directory):
             file_path = os.path.join(abs_directory, file)
             if os.path.isfile(file_path) and Path(file).suffix.lower() in VIDEO_EXTENSIONS:
                 videos.append(file_path)
-    
+
     elif scan_mode == "TARGETED":
         if not include_subfolders:
             return []
@@ -46,13 +53,13 @@ def find_videos(directory: str, include_subfolders: Optional[List[str]] = None, 
                               else os.path.abspath(os.path.join(abs_directory, subfolder)))
             if not os.path.exists(subfolder_path) or not os.path.isdir(subfolder_path):
                 continue
-            if subfolder_path.startswith(deduped_folder):
+            if is_in_deduped(subfolder_path):
                 continue
             folders_to_scan.append(subfolder_path)
-        
+
         for folder in folders_to_scan:
             for root, _, files in os.walk(folder):
-                if root.startswith(deduped_folder):
+                if is_in_deduped(root):
                     continue
                 for file in files:
                     file_path = os.path.join(root, file)
@@ -60,7 +67,7 @@ def find_videos(directory: str, include_subfolders: Optional[List[str]] = None, 
                         videos.append(file_path)
     else:
         for root, _, files in os.walk(abs_directory):
-            if root.startswith(deduped_folder):
+            if is_in_deduped(root):
                 continue
             for file in files:
                 file_path = os.path.join(root, file)
