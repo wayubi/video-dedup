@@ -392,6 +392,10 @@ def run_scan(args):
             except Exception as e:
                 print(f"Warning: Could not fully delete cache: {e}")
 
+        if args.prune_cache:
+            pruned = prune_cache(base_dir)
+            print(f"Pruned {pruned} stale cache entries")
+
         if scan_mode == "ROOT":
             print(f"Scanning {base_dir} (root directory only)...")
         elif scan_mode == "TARGETED":
@@ -433,10 +437,6 @@ def run_scan(args):
                     w, h = result["details"].get("resolution", (0, 0))
                     print(f"  - {os.path.basename(path)} ({w}x{h}) [conf: {result['confidence']:.2f}]")
 
-        if args.prune_cache:
-            pruned = prune_cache(base_dir)
-            print(f"{'Pruned ' if pruned else ''}{pruned} stale cache entries")
-
         n_workers = os.cpu_count() or 4
         print(f"Using {n_workers} workers for feature extraction")
 
@@ -470,13 +470,26 @@ def run_scan(args):
 
         duplicate_groups = find_duplicate_groups_with_features(features_list, verbose=args.verbose)
 
+        features_by_path = {f["path"]: f for f in features_list}
         scan_report = {
             'scan_mode': scan_mode,
             'directory': base_dir,
-            'total_videos_analyzed': len(features_list),
-            'duplicate_sets_found': len(duplicate_groups),
-            'sets': [{'set_id': i + 1, 'videos': [{'path': v} for v in group]}
-                    for i, group in enumerate(duplicate_groups)],
+            'total_videos': len(features_list),
+            'duplicate_sets': len(duplicate_groups),
+            'sets': [
+                {
+                    'set_id': i + 1,
+                    'videos': [
+                        {
+                            'path': v,
+                            'filename': os.path.basename(v),
+                            'duration': features_by_path.get(v, {}).get("duration", 0),
+                        }
+                        for v in group
+                    ],
+                }
+                for i, group in enumerate(duplicate_groups)
+            ],
         }
 
         if args.detect_upscaling:
@@ -491,6 +504,17 @@ def run_scan(args):
                     'upscaled_detected': upscaled_count,
                     'analysis_methods': ['frequency_analysis', 'edge_sharpness', 'multiscale_comparison'],
                 },
+                'videos': [
+                    {
+                        'path': path,
+                        'filename': os.path.basename(path),
+                        'is_upscaled': result['is_upscaled'],
+                        'confidence': result['confidence'],
+                        'resolution': result['details'].get('resolution', [0, 0]),
+                        'scores': result['details'].get('scores', {}),
+                    }
+                    for path, result in upscaling_results.items()
+                ],
             }
 
         report_path = os.path.join(base_dir, args.report)

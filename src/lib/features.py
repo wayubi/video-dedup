@@ -72,7 +72,11 @@ def find_videos(directory: str, include_subfolders: Optional[List[str]] = None, 
 
 # Cache functions
 def get_cache_key(video_path: str) -> str:
-    return hashlib.md5(video_path.encode()).hexdigest()[:16]
+    if not os.path.exists(video_path):
+        return ""
+    stat = os.stat(video_path)
+    key_str = f"{video_path}|{stat.st_size}|{stat.st_mtime}"
+    return hashlib.sha256(key_str.encode()).hexdigest()[:16]
 
 
 def load_cache_index() -> Dict[str, Dict]:
